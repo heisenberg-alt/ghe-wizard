@@ -227,7 +227,7 @@ func (s *server) auth(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, p, ok := r.BasicAuth()
-		if !ok || subtleCompare(u, s.opts.BasicUser) == false || subtleCompare(p, s.opts.BasicPass) == false {
+		if !ok || !subtleCompare(u, s.opts.BasicUser) || !subtleCompare(p, s.opts.BasicPass) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="ghe-wizard"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

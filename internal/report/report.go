@@ -52,7 +52,7 @@ func Markdown(sc *engine.Scorecard) string {
 	sort.Slice(domains, func(i, j int) bool { return domains[i] < domains[j] })
 
 	for _, d := range domains {
-		fmt.Fprintf(&b, "## %s\n\n", strings.Title(string(d)))
+		fmt.Fprintf(&b, "## %s\n\n", title(string(d)))
 		fmt.Fprintf(&b, "| Rule | Status | Severity | Finding |\n|---|---|---|---|\n")
 		for _, r := range byDomain[d] {
 			detail := strings.ReplaceAll(r.Detail, "\n", " ")
