@@ -27,9 +27,11 @@ import (
 	"github.com/ghe-wizard/ghe-wizard/internal/config"
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/ghclient"
+	"github.com/ghe-wizard/ghe-wizard/internal/policy"
 	"github.com/ghe-wizard/ghe-wizard/internal/report"
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
 	_ "github.com/ghe-wizard/ghe-wizard/internal/rules/catalog" // register rules
+	"github.com/ghe-wizard/ghe-wizard/internal/store"
 	"github.com/ghe-wizard/ghe-wizard/internal/web"
 )
 
@@ -55,6 +57,8 @@ func main() {
 		err = cmdServe(args)
 	case "list":
 		err = cmdList(args)
+	case "history":
+		err = cmdHistory(args)
 	case "version", "--version", "-v":
 		fmt.Println(buildinfo.Get().String())
 		return
@@ -82,6 +86,7 @@ Commands:
   report    Alias for assess
   serve     Start the web dashboard
   list      List the best-practice rule catalog
+  history   Show recorded assessment history (requires --db)
   version   Print version and build information
 
 Global flags (or env GHE_ENTERPRISE / GHE_TOKEN):
@@ -132,6 +137,8 @@ func cmdAssess(args []string) error {
 	fs := flag.NewFlagSet("assess", flag.ExitOnError)
 	enterprise := fs.String("enterprise", "", "enterprise slug")
 	cfgPath := fs.String("config", "", "config file")
+	policyPath := fs.String("policy", "", "config-as-code policy file (YAML): disabled rules, thresholds, waivers")
+	dbPath := fs.String("db", "", "record this run to a SQLite history database at this path")
 	format := fs.String("format", "md", "output format: md|json|html")
 	out := fs.String("out", "", "write output to file instead of stdout")
 	failOn := fs.String("fail-on", "", "exit non-zero if any finding has this status or worse: fail|warn")
@@ -139,11 +146,38 @@ func cmdAssess(args []string) error {
 	demo := fs.Bool("demo", false, "assess synthetic demo data (no token required)")
 	fs.Parse(args)
 
-	eng, _, err := buildEngine(fs, *enterprise, *cfgPath, !*noPreflight && !*demo, *demo)
+	eng, cfg, err := buildEngine(fs, *enterprise, *cfgPath, !*noPreflight && !*demo, *demo)
 	if err != nil {
 		return err
 	}
-	sc := eng.Assess(context.Background(), nil)
+
+	// Config-as-code: load policy, apply thresholds, filter disabled rules.
+	pol, err := policy.Load(*policyPath)
+	if err != nil {
+		return err
+	}
+	pol.ApplyThresholds(&cfg.Thresholds.MaxEnterpriseOwners, &cfg.Thresholds.StaleOrgDays)
+	known := map[string]bool{}
+	for _, r := range rules.All() {
+		known[r.Meta().ID] = true
+	}
+	for _, w := range pol.Validate(known) {
+		fmt.Fprintln(os.Stderr, "policy warning:", w)
+	}
+	toRun := pol.FilterRules(rules.All())
+
+	ctx := context.Background()
+	sc := eng.Assess(ctx, toRun)
+	if waived := pol.Apply(sc); waived > 0 {
+		fmt.Fprintf(os.Stderr, "applied %d waiver(s) from policy\n", waived)
+	}
+
+	// Persist run + report drift against the previous run.
+	if *dbPath != "" {
+		if err := recordRun(ctx, *dbPath, sc); err != nil {
+			fmt.Fprintln(os.Stderr, "warning: could not record run:", err)
+		}
+	}
 
 	var data string
 	switch *format {
@@ -291,6 +325,7 @@ func cmdServe(args []string) error {
 	cfgPath := fs.String("config", "", "config file")
 	addr := fs.String("addr", ":8080", "listen address")
 	demo := fs.Bool("demo", false, "serve synthetic demo data (no token required)")
+	dbPath := fs.String("db", "", "record runs to a SQLite history DB (enables trends & /badge.svg)")
 	basicUser := fs.String("basic-user", "", "enable HTTP basic auth with this username")
 	basicPass := fs.String("basic-pass", "", "HTTP basic auth password (or env GHE_BASIC_PASS)")
 	fs.Parse(args)
@@ -306,7 +341,7 @@ func cmdServe(args []string) error {
 	if pass == "" {
 		pass = os.Getenv("GHE_BASIC_PASS")
 	}
-	opts := web.Options{Addr: *addr, Demo: *demo, BasicUser: *basicUser, BasicPass: pass}
+	opts := web.Options{Addr: *addr, Demo: *demo, DBPath: *dbPath, BasicUser: *basicUser, BasicPass: pass}
 	authMsg := ""
 	if opts.BasicUser != "" && opts.BasicPass != "" {
 		authMsg = " (basic auth enabled)"
@@ -341,4 +376,75 @@ func confirm(prompt string) bool {
 	line, _ := reader.ReadString('\n')
 	line = strings.TrimSpace(strings.ToLower(line))
 	return line == "y" || line == "yes"
+}
+
+// recordRun persists a scorecard to the history DB and prints drift vs the
+// previous run to stderr.
+func recordRun(ctx context.Context, dbPath string, sc *engine.Scorecard) error {
+	st, err := store.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	run, err := st.SaveRun(ctx, sc)
+	if err != nil {
+		return err
+	}
+	drift, err := st.DriftAgainstPrevious(ctx, run.ID, sc)
+	if err != nil || drift == nil {
+		return err
+	}
+	sign := "+"
+	if drift.ScoreDelta < 0 {
+		sign = ""
+	}
+	fmt.Fprintf(os.Stderr, "drift vs previous run: score %s%d", sign, drift.ScoreDelta)
+	if len(drift.NewlyFailing) > 0 {
+		fmt.Fprintf(os.Stderr, ", newly failing: %s", strings.Join(drift.NewlyFailing, ","))
+	}
+	if len(drift.NewlyFixed) > 0 {
+		fmt.Fprintf(os.Stderr, ", newly fixed: %s", strings.Join(drift.NewlyFixed, ","))
+	}
+	fmt.Fprintln(os.Stderr)
+	return nil
+}
+
+// cmdHistory prints recent recorded runs for an enterprise.
+func cmdHistory(args []string) error {
+	fs := flag.NewFlagSet("history", flag.ExitOnError)
+	enterprise := fs.String("enterprise", "", "enterprise slug")
+	cfgPath := fs.String("config", "", "config file")
+	dbPath := fs.String("db", "ghe-wizard.db", "SQLite history database path")
+	limit := fs.Int("limit", 20, "number of runs to show")
+	fs.Parse(args)
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		return err
+	}
+	if *enterprise != "" {
+		cfg.Enterprise = *enterprise
+	}
+	if cfg.Enterprise == "" {
+		return fmt.Errorf("enterprise slug required (set --enterprise or GHE_ENTERPRISE)")
+	}
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	runs, err := st.Runs(context.Background(), cfg.Enterprise, *limit)
+	if err != nil {
+		return err
+	}
+	if len(runs) == 0 {
+		fmt.Printf("no recorded runs for %q in %s\n", cfg.Enterprise, *dbPath)
+		return nil
+	}
+	fmt.Printf("%-20s %-6s %-5s %-5s %-5s %-6s\n", "WHEN (UTC)", "SCORE", "FAIL", "WARN", "PASS", "MANUAL")
+	for _, r := range runs {
+		fmt.Printf("%-20s %-6d %-5d %-5d %-5d %-6d\n",
+			r.CreatedAt.Format("2006-01-02 15:04"), r.Score, r.Fail, r.Warn, r.Pass, r.Manual)
+	}
+	return nil
 }

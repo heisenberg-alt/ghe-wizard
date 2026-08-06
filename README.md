@@ -1,7 +1,7 @@
 # ghe-wizard — GitHub Enterprise Best-Practices Wizard
 
 [![CI](https://github.com/heisenberg-alt/ghe-wizard/actions/workflows/ci.yml/badge.svg)](https://github.com/heisenberg-alt/ghe-wizard/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/heisenberg-alt/ghe-wizard?sort=semver)](https://github.com/heisenberg-alt/ghe-wizard/releases)
 
@@ -119,6 +119,32 @@ when using a fine-grained token.
 ```bash
 ghe-wizard assess --format json --out scorecard.json --fail-on fail
 # exit code is non-zero if any check is failing
+```
+
+There is also an **official GitHub Action** that runs the assessment, gates PRs,
+and posts a sticky scorecard comment — see [action/](action/).
+
+### History & trends
+
+Record every run to an embedded SQLite database to unlock score trends and drift
+detection (newly failing / newly fixed rules). The dashboard shows a score-trend
+sparkline, and a dynamic **score badge** is served at `/badge.svg`.
+
+```bash
+ghe-wizard assess --demo --db ghe-wizard.db     # record a run
+ghe-wizard history --enterprise acme-corp --db ghe-wizard.db
+ghe-wizard serve --db ghe-wizard.db             # dashboard trends + /badge.svg
+```
+
+### Config-as-code & waivers
+
+Govern the assessment declaratively with a YAML policy — disable rules, override
+severities, tune thresholds, and record compliance **waivers** (accepted risks
+with an owner, reason and expiry). Waived findings are excluded from the score
+and from `--fail-on` gating until they expire. See [policy.example.yaml](policy.example.yaml).
+
+```bash
+ghe-wizard assess --policy policy.example.yaml
 ```
 
 ### Secure the dashboard

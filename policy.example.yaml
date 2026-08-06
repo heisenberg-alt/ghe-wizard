@@ -1,0 +1,25 @@
+# ghe-wizard config-as-code policy (example)
+#
+# Use with:  ghe-wizard assess --policy policy.example.yaml
+# Everything here is optional.
+
+# Rules to skip entirely (by ID). See `ghe-wizard list`.
+disabled_rules:
+  - BILL-02          # spending limits tracked elsewhere
+
+# Change the severity a finding is reported at.
+severity_overrides:
+  POL-03: high        # IP allow list is mandatory for us
+
+# Tune assessment thresholds (0 / omitted = keep defaults).
+thresholds:
+  max_enterprise_owners: 3
+  stale_org_days: 90
+
+# Accepted risks. A waiver converts a failing/warning finding to "waived",
+# excluding it from the score and from --fail-on gating until it expires.
+waivers:
+  - rule: SEC-03
+    reason: Legacy orgs migrate to enterprise-level 2FA enforcement in Q1
+    owner: security-team
+    expires: 2027-01-01   # YYYY-MM-DD; omit for a non-expiring waiver

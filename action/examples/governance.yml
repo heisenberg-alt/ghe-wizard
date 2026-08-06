@@ -1,0 +1,47 @@
+name: GHE Governance Assessment
+
+# Example consumer workflow for ghe-wizard.
+# Copy this file into repositories where you want weekly, manual, and PR governance checks.
+# Configure repository or organization secrets named GHE_TOKEN and GHE_ENTERPRISE before running it.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run every Monday at 06:00 UTC.
+    - cron: '0 6 * * 1'
+  pull_request:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  assess:
+    name: Assess GitHub Enterprise governance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run ghe-wizard assessment
+        id: ghe-wizard
+        uses: ./action
+        with:
+          enterprise: ${{ secrets.GHE_ENTERPRISE }}
+          token: ${{ secrets.GHE_TOKEN }}
+          # Gate PRs on failed controls. Scheduled/manual runs produce reports without failing the workflow.
+          fail-on: ${{ github.event_name == 'pull_request' && 'fail' || '' }}
+          format: json
+          output: scorecard.json
+          comment-pr: 'true'
+          version: latest
+
+      - name: Upload scorecard artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghe-wizard-scorecard
+          path: scorecard.json
+          if-no-files-found: warn

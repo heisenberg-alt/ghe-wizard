@@ -87,6 +87,7 @@
       const sc = await api("/api/assess", body());
       state.scorecard = sc;
       render(sc);
+      loadTrends();
       $("#loadingCard").style.display = "none";
       $("#resultRoot").style.display = "";
       setConn("ok", `Assessed · score ${sc.summary.score}/100`);
@@ -99,6 +100,50 @@
     } finally {
       busy(false);
     }
+  }
+
+  /* ------------------------------- trends -------------------------------- */
+  async function loadTrends() {
+    try {
+      const runs = await api2GET("/api/history?enterprise=" + encodeURIComponent($("#enterprise").value.trim()));
+      if (!Array.isArray(runs) || runs.length < 2) { $("#trendsCard").style.display = "none"; return; }
+      renderTrends(runs);
+      $("#trendsCard").style.display = "";
+    } catch { $("#trendsCard").style.display = "none"; }
+  }
+
+  async function api2GET(path) {
+    const r = await fetch(path);
+    if (!r.ok) throw new Error("history " + r.status);
+    return r.json();
+  }
+
+  function renderTrends(runs) {
+    // runs are newest-first; reverse for chronological plotting.
+    const series = runs.slice().reverse();
+    const scores = series.map(r => r.score);
+    const w = 640, h = 90, pad = 8;
+    const max = 100, min = 0;
+    const n = scores.length;
+    const x = i => pad + (w - 2 * pad) * (n === 1 ? 0 : i / (n - 1));
+    const y = v => pad + (h - 2 * pad) * (1 - (v - min) / (max - min));
+    const pts = scores.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+    const area = `${pad},${h - pad} ` + pts + ` ${x(n - 1)},${h - pad}`;
+    const last = scores[n - 1], prev = scores[n - 2];
+    const delta = last - prev;
+    const col = last >= 75 ? "var(--pass)" : last >= 40 ? "var(--warn)" : "var(--fail)";
+
+    $("#trendChart").innerHTML =
+      `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none">
+         <polygon points="${area}" fill="${col}" fill-opacity="0.10"/>
+         <polyline points="${pts}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+         ${scores.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${i === n - 1 ? 3.5 : 2}" fill="${col}"/>`).join("")}
+       </svg>`;
+
+    const sign = delta > 0 ? "▲ +" : delta < 0 ? "▼ " : "▬ ";
+    const dcol = delta > 0 ? "var(--pass)" : delta < 0 ? "var(--fail)" : "var(--fg-muted)";
+    $("#trendDelta").innerHTML = `<span style="color:${dcol};font-weight:600">${sign}${Math.abs(delta)}</span> since last scan`;
+    $("#trendMeta").textContent = `${n} recorded scans · latest ${last}/100 · range ${Math.min(...scores)}–${Math.max(...scores)}`;
   }
 
   /* ------------------------------- render -------------------------------- */

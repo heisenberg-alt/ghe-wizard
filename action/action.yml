@@ -1,0 +1,273 @@
+name: GHE Best-Practices Assessment
+description: Assess GitHub Enterprise best practices with ghe-wizard and publish a sticky pull request summary.
+
+inputs:
+  enterprise:
+    description: GitHub Enterprise slug or enterprise account name to assess.
+    required: true
+  token:
+    description: Token used by ghe-wizard for the assessment. Prefer storing it in secrets.GHE_TOKEN.
+    required: true
+  fail-on:
+    description: Optional threshold that makes the action fail when breached. Supported values are "fail", "warn", or empty.
+    required: false
+    default: ''
+  format:
+    description: Report format to write to the output file. Supported values are "json", "md", or "html".
+    required: false
+    default: json
+  output:
+    description: Workspace-relative report path to create.
+    required: false
+    default: scorecard.json
+  comment-pr:
+    description: Upsert a sticky Markdown summary comment on pull requests.
+    required: false
+    default: 'true'
+  version:
+    description: Container image tag for ghcr.io/heisenberg-alt/ghe-wizard.
+    required: false
+    default: latest
+
+outputs:
+  score:
+    description: Numeric score from the JSON scorecard.
+    value: ${{ steps.parse.outputs.score }}
+  grade:
+    description: Letter grade computed from score (A >= 90, B >= 75, C >= 60, D >= 40, else F).
+    value: ${{ steps.parse.outputs.grade }}
+  failing:
+    description: Number of failed checks.
+    value: ${{ steps.parse.outputs.failing }}
+  warnings:
+    description: Number of warning checks.
+    value: ${{ steps.parse.outputs.warnings }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run assessment
+      id: assess
+      shell: bash
+      env:
+        INPUT_ENTERPRISE: ${{ inputs.enterprise }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_OUTPUT: ${{ inputs.output }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${INPUT_ENTERPRISE}" ]; then
+          echo "::error::The 'enterprise' input is required."
+          exit 1
+        fi
+        if [ -z "${INPUT_TOKEN}" ]; then
+          echo "::error::The 'token' input is required."
+          exit 1
+        fi
+        case "${INPUT_FAIL_ON}" in
+          ""|"fail"|"warn") ;;
+          *) echo "::error::The 'fail-on' input must be empty, 'fail', or 'warn'."; exit 1 ;;
+        esac
+        case "${INPUT_FORMAT}" in
+          "json"|"md"|"html") ;;
+          *) echo "::error::The 'format' input must be 'json', 'md', or 'html'."; exit 1 ;;
+        esac
+        if [[ ! "${INPUT_VERSION}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+          echo "::error::The 'version' input must be a container tag such as 'latest' or 'v1.2.3'."
+          exit 1
+        fi
+
+        output="${INPUT_OUTPUT:-scorecard.json}"
+        if [[ "${output}" = /* || "${output}" == *".."* ]]; then
+          echo "::error::The 'output' input must be a workspace-relative path without '..'."
+          exit 1
+        fi
+        mkdir -p "${GITHUB_WORKSPACE}/$(dirname "${output}")"
+        mkdir -p "${RUNNER_TEMP}/ghe-wizard"
+
+        image="ghcr.io/heisenberg-alt/ghe-wizard:${INPUT_VERSION}"
+        docker pull "${image}" >/dev/null
+
+        # Pass credentials only through the container environment; never print them.
+        export GHE_TOKEN="${INPUT_TOKEN}"
+        export GITHUB_TOKEN="${INPUT_TOKEN}"
+        export GHE_ENTERPRISE="${INPUT_ENTERPRISE}"
+
+        common_docker_args=(
+          run --rm
+          -e GHE_TOKEN
+          -e GITHUB_TOKEN
+          -e GHE_ENTERPRISE
+          -v "${GITHUB_WORKSPACE}:/workspace"
+          -v "${RUNNER_TEMP}/ghe-wizard:/runner-temp"
+          -w /workspace
+          "${image}"
+          assess
+        )
+
+        json_host_path="${GITHUB_WORKSPACE}/${output}"
+        json_container_path="/workspace/${output}"
+        if [ "${INPUT_FORMAT}" != "json" ]; then
+          json_host_path="${RUNNER_TEMP}/ghe-wizard/scorecard.json"
+          json_container_path="/runner-temp/scorecard.json"
+        fi
+
+        json_args=("${common_docker_args[@]}" --format json --out "${json_container_path}")
+        if [ -n "${INPUT_FAIL_ON}" ]; then
+          json_args+=(--fail-on "${INPUT_FAIL_ON}")
+        fi
+
+        set +e
+        docker "${json_args[@]}"
+        assessment_exit_code=$?
+        set -e
+
+        if [ ! -s "${json_host_path}" ]; then
+          echo "::error::ghe-wizard did not create a JSON scorecard at the expected path."
+          if [ "${assessment_exit_code}" -ne 0 ]; then
+            exit "${assessment_exit_code}"
+          fi
+          exit 1
+        fi
+
+        if [ "${INPUT_FORMAT}" != "json" ]; then
+          docker "${common_docker_args[@]}" --format "${INPUT_FORMAT}" --out "/workspace/${output}"
+        fi
+
+        {
+          echo "SCORECARD_PATH=${json_host_path}"
+          echo "GHE_WIZARD_EXIT_CODE=${assessment_exit_code}"
+        } >> "${GITHUB_ENV}"
+
+    - name: Parse scorecard outputs
+      id: parse
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        node <<'NODE'
+        const fs = require('fs');
+
+        const scorecardPath = process.env.SCORECARD_PATH;
+        const outputPath = process.env.GITHUB_OUTPUT;
+        const envPath = process.env.GITHUB_ENV;
+        const commentPath = `${process.env.RUNNER_TEMP}/ghe-wizard-comment.md`;
+
+        const scorecard = JSON.parse(fs.readFileSync(scorecardPath, 'utf8'));
+        const summary = scorecard.summary || {};
+        const counts = summary.counts || {};
+        const score = Number(summary.score ?? 0);
+        const grade = score >= 90 ? 'A' : score >= 75 ? 'B' : score >= 60 ? 'C' : score >= 40 ? 'D' : 'F';
+        const failing = Number(counts.fail ?? 0);
+        const warnings = Number(counts.warn ?? 0);
+
+        const writeOutput = (name, value) => {
+          fs.appendFileSync(outputPath, `${name}=${String(value)}\n`);
+        };
+        writeOutput('score', score);
+        writeOutput('grade', grade);
+        writeOutput('failing', failing);
+        writeOutput('warnings', warnings);
+
+        const statusCount = (name) => Number(counts[name] ?? 0);
+        const escapeCell = (value) => String(value ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+        const findingLine = (result) => {
+          const meta = result.meta || {};
+          const id = escapeCell(meta.id || 'unknown');
+          const title = escapeCell(meta.title || 'Untitled finding');
+          const domain = escapeCell(meta.domain || 'general');
+          const severity = escapeCell(meta.severity || 'unknown');
+          const docs = meta.docs_url ? ` — [Docs](${meta.docs_url})` : '';
+          const detail = result.detail ? ` — ${escapeCell(result.detail)}` : '';
+          return `- **${id}: ${title}** (${domain}, ${severity})${docs}${detail}`;
+        };
+
+        const failingFindings = (scorecard.results || [])
+          .filter((result) => ['fail', 'error'].includes(String(result.status || '').toLowerCase()))
+          .slice(0, 10);
+
+        const body = [
+          '<!-- ghe-wizard -->',
+          '## GHE Best-Practices Assessment',
+          '',
+          `**Score:** ${score} (${grade})`,
+          '',
+          '| Status | Count |',
+          '| --- | ---: |',
+          `| Pass | ${statusCount('pass')} |`,
+          `| Fail | ${statusCount('fail')} |`,
+          `| Warn | ${statusCount('warn')} |`,
+          `| Manual | ${statusCount('manual')} |`,
+          `| Error | ${statusCount('error')} |`,
+          `| Total | ${Number(summary.total ?? 0)} |`,
+          '',
+          '### Top failing findings',
+          '',
+          failingFindings.length > 0
+            ? failingFindings.map(findingLine).join('\n')
+            : 'No failing findings were reported.',
+          '',
+          '_Generated by ghe-wizard._',
+          ''
+        ].join('\n');
+
+        fs.writeFileSync(commentPath, body, 'utf8');
+        fs.appendFileSync(envPath, `COMMENT_BODY_PATH=${commentPath}\n`);
+        NODE
+
+    - name: Upsert pull request comment
+      if: ${{ inputs.comment-pr == 'true' && github.event_name == 'pull_request' }}
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const fs = require('fs');
+          const marker = '<!-- ghe-wizard -->';
+          const body = fs.readFileSync(process.env.COMMENT_BODY_PATH, 'utf8');
+          const issue_number = context.payload.pull_request?.number;
+
+          if (!issue_number) {
+            return;
+          }
+
+          try {
+            const { owner, repo } = context.repo;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100
+            });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body
+              });
+            }
+          } catch (error) {
+            core.warning(`Unable to upsert ghe-wizard pull request comment: ${error.message}`);
+          }
+
+    - name: Apply fail-on threshold
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ "${GHE_WIZARD_EXIT_CODE:-0}" -ne 0 ]; then
+          echo "::error::ghe-wizard assessment breached the configured fail-on threshold."
+          exit "${GHE_WIZARD_EXIT_CODE}"
+        fi

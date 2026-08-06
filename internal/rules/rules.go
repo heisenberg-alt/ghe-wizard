@@ -19,6 +19,7 @@ const (
 	StatusManual  Status = "manual"  // cannot be determined via API; human review
 	StatusError   Status = "error"   // assessment itself failed (auth, network)
 	StatusSkipped Status = "skipped" // not applicable to this enterprise
+	StatusWaived  Status = "waived"  // failing but accepted via a policy waiver
 )
 
 // Severity ranks the importance of a failing rule.

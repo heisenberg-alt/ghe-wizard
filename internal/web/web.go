@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,8 +20,10 @@ import (
 	"github.com/ghe-wizard/ghe-wizard/internal/config"
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/ghclient"
+	"github.com/ghe-wizard/ghe-wizard/internal/report"
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
 	_ "github.com/ghe-wizard/ghe-wizard/internal/rules/catalog" // register rules
+	"github.com/ghe-wizard/ghe-wizard/internal/store"
 )
 
 //go:embed ui
@@ -31,7 +34,8 @@ type Options struct {
 	Addr         string
 	BasicUser    string // optional; when set with BasicPass, enables basic auth
 	BasicPass    string
-	Demo         bool // serve synthetic data without requiring a token
+	Demo         bool   // serve synthetic data without requiring a token
+	DBPath       string // optional: record runs and enable history/trends
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 }
@@ -51,6 +55,14 @@ func ServeWithOptions(opts Options, base *config.Config) error {
 		opts.WriteTimeout = 3 * time.Minute
 	}
 	s := &server{base: base, opts: opts}
+	if opts.DBPath != "" {
+		st, err := store.Open(opts.DBPath)
+		if err != nil {
+			return fmt.Errorf("open history db: %w", err)
+		}
+		defer st.Close()
+		s.store = st
+	}
 	mux := http.NewServeMux()
 
 	sub, _ := fsSub()
@@ -59,6 +71,8 @@ func ServeWithOptions(opts Options, base *config.Config) error {
 	mux.HandleFunc("/api/assess", s.handleAssess)
 	mux.HandleFunc("/api/apply", s.handleApply)
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/badge.svg", s.handleBadge)
 
 	handler := securityHeaders(s.auth(mux))
 	srv := &http.Server{
@@ -90,8 +104,9 @@ func ServeWithOptions(opts Options, base *config.Config) error {
 }
 
 type server struct {
-	base *config.Config
-	opts Options
+	base  *config.Config
+	opts  Options
+	store *store.Store
 }
 
 // request-scoped overrides supplied by the UI form.
@@ -150,13 +165,14 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"default_enterprise": s.base.Enterprise,
 		"has_server_token":   s.base.Token != "",
 		"demo":               s.opts.Demo,
+		"history":            s.store != nil,
 	})
 }
 
 func (s *server) handleAssess(w http.ResponseWriter, r *http.Request) {
 	var b reqBody
 	_ = json.NewDecoder(r.Body).Decode(&b)
-	eng, _, err := s.engineFor(b)
+	eng, cfg, err := s.engineFor(b)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -164,7 +180,54 @@ func (s *server) handleAssess(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
 	sc := eng.Assess(ctx, nil)
+	// Record history when a store is configured (best-effort, non-fatal).
+	if s.store != nil {
+		_, _ = s.store.SaveRun(ctx, sc)
+	}
+	_ = cfg
 	writeJSON(w, http.StatusOK, sc)
+}
+
+// handleHistory returns recent recorded runs for an enterprise.
+func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	ent := r.URL.Query().Get("enterprise")
+	if ent == "" {
+		ent = s.base.Enterprise
+	}
+	if ent == "" && s.opts.Demo {
+		ent = "acme-corp"
+	}
+	runs, err := s.store.Runs(r.Context(), ent, 50)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, runs)
+}
+
+// handleBadge serves an SVG score badge for the latest recorded run.
+func (s *server) handleBadge(w http.ResponseWriter, r *http.Request) {
+	score := -1
+	if s.store != nil {
+		ent := r.URL.Query().Get("enterprise")
+		if ent == "" {
+			ent = s.base.Enterprise
+		}
+		if runs, err := s.store.Runs(r.Context(), ent, 1); err == nil && len(runs) > 0 {
+			score = runs[0].Score
+		}
+	}
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Cache-Control", "no-cache")
+	if score < 0 {
+		w.Write([]byte(report.Badge(0)))
+		return
+	}
+	w.Write([]byte(report.Badge(score)))
 }
 
 func (s *server) handleApply(w http.ResponseWriter, r *http.Request) {

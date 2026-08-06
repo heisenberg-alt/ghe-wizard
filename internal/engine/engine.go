@@ -99,6 +99,10 @@ func (e *Engine) FailingRules(ctx context.Context, rs []rules.Rule) []rules.Rule
 	return failing
 }
 
+// Recompute regenerates the summary after the results slice has been modified
+// (for example after applying policy waivers or severity overrides).
+func Recompute(sc *Scorecard) { sc.Summary = summarize(sc.Results) }
+
 func summarize(results []rules.Result) Summary {
 	s := Summary{
 		Counts:   map[string]int{},
