@@ -147,9 +147,10 @@ func (c *Cached) CostCenters(ctx context.Context, slug string) ([]CostCenter, Ca
 }
 
 // Prefetch warms the per-organization caches (settings + repositories) for the
-// enterprise concurrently, so subsequent rule assessments hit memory. Errors are
-// ignored here; the individual rule reads will surface them.
-func (c *Cached) Prefetch(ctx context.Context, slug string, maxOrgs int) {
+// enterprise concurrently, so subsequent rule assessments hit memory. maxRepos
+// bounds the per-org repository scan (0 = unbounded). Errors are ignored here;
+// the individual rule reads will surface them.
+func (c *Cached) Prefetch(ctx context.Context, slug string, maxOrgs, maxRepos int) {
 	orgs, err := c.Organizations(ctx, slug, maxOrgs)
 	if err != nil || len(orgs) == 0 {
 		return
@@ -163,7 +164,7 @@ func (c *Cached) Prefetch(ctx context.Context, slug string, maxOrgs int) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			_, _ = c.OrgSettings(ctx, login)
-			_, _ = c.OrgRepos(ctx, login, 0)
+			_, _ = c.OrgRepos(ctx, login, maxRepos)
 		}(o.Login)
 	}
 	wg.Wait()

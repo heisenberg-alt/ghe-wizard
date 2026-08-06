@@ -173,7 +173,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleAssess(w http.ResponseWriter, r *http.Request) {
 	var b reqBody
 	_ = json.NewDecoder(r.Body).Decode(&b)
-	eng, cfg, err := s.engineFor(b)
+	eng, _, err := s.engineFor(b)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -185,7 +185,6 @@ func (s *server) handleAssess(w http.ResponseWriter, r *http.Request) {
 	if s.store != nil {
 		_, _ = s.store.SaveRun(ctx, sc)
 	}
-	_ = cfg
 	writeJSON(w, http.StatusOK, sc)
 }
 
@@ -238,6 +237,8 @@ func (s *server) handleAssessStream(w http.ResponseWriter, r *http.Request) {
 	}
 	send("done", sc)
 }
+
+// handleHistory returns recent recorded runs for an enterprise.
 func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		writeJSON(w, http.StatusOK, []any{})
@@ -308,7 +309,26 @@ func (s *server) handleApply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	results := eng.Remediate(ctx, targets, b.DryRun)
+	// Record applied (non-dry-run) remediations to history when available.
+	if s.store != nil && !b.DryRun {
+		_ = s.store.SaveRemediations(ctx, s.enterpriseFor(b), results)
+	}
 	writeJSON(w, http.StatusOK, results)
+}
+
+// enterpriseFor resolves the enterprise slug for a request (body override,
+// server default, or the demo enterprise).
+func (s *server) enterpriseFor(b reqBody) string {
+	if b.Enterprise != "" {
+		return b.Enterprise
+	}
+	if s.base.Enterprise != "" {
+		return s.base.Enterprise
+	}
+	if s.opts.Demo {
+		return "acme-corp"
+	}
+	return ""
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

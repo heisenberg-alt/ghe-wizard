@@ -26,6 +26,9 @@ type Config struct {
 	DryRun bool `json:"dry_run"`
 	// MaxOrgs caps how many organizations are scanned (0 = no cap).
 	MaxOrgs int `json:"max_orgs"`
+	// MaxReposPerOrg bounds the per-org repository scan (0 = default). Requested
+	// newest-push first, so the bound still captures recent activity.
+	MaxReposPerOrg int `json:"max_repos_per_org"`
 	// Concurrency bounds parallel per-organization API calls (0 = default).
 	Concurrency int `json:"concurrency"`
 }
@@ -82,9 +85,17 @@ func Load(path string) (*Config, error) {
 	if cfg.Thresholds.StaleOrgDays == 0 {
 		cfg.Thresholds.StaleOrgDays = DefaultThresholds().StaleOrgDays
 	}
+	if cfg.MaxReposPerOrg == 0 {
+		cfg.MaxReposPerOrg = DefaultMaxReposPerOrg
+	}
 
 	return cfg, nil
 }
+
+// DefaultMaxReposPerOrg bounds the per-org repository scan by default. Repos are
+// fetched newest-push first, so this still captures recent activity while
+// avoiding unbounded pagination on very large organizations.
+const DefaultMaxReposPerOrg = 500
 
 // Validate ensures the minimum required fields are present.
 func (c *Config) Validate() error {

@@ -176,9 +176,11 @@ func (c *Client) OrgSettings(ctx context.Context, org string) (*OrgSettings, err
 }
 
 // OrgRepos lists repositories in an org via REST (capped by max, 0=all).
+// Repositories are requested newest-push first so a bounded scan still yields
+// the most-recently-active repos (used by staleness/innersource checks).
 func (c *Client) OrgRepos(ctx context.Context, org string, max int) ([]Repository, error) {
 	var repos []Repository
-	err := c.restPaginated(ctx, "/orgs/"+org+"/repos?per_page=100&type=all", func(page []byte) error {
+	err := c.restPaginated(ctx, "/orgs/"+org+"/repos?per_page=100&type=all&sort=pushed&direction=desc", func(page []byte) error {
 		var batch []struct {
 			Name          string    `json:"name"`
 			FullName      string    `json:"full_name"`

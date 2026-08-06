@@ -9,6 +9,7 @@ import (
 
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
+	"github.com/ghe-wizard/ghe-wizard/internal/scoring"
 )
 
 // HTML renders a self-contained, styled HTML scorecard suitable for sharing or
@@ -79,18 +80,7 @@ type gradeInfo struct {
 }
 
 func grade(score int) gradeInfo {
-	switch {
-	case score >= 90:
-		return gradeInfo{"A", "#2ea043"}
-	case score >= 75:
-		return gradeInfo{"B", "#2ea043"}
-	case score >= 60:
-		return gradeInfo{"C", "#d29922"}
-	case score >= 40:
-		return gradeInfo{"D", "#db6d28"}
-	default:
-		return gradeInfo{"F", "#f85149"}
-	}
+	return gradeInfo{letter: scoring.Letter(score), color: scoring.Color(score)}
 }
 
 func title(s string) string {

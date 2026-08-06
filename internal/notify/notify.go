@@ -14,6 +14,7 @@ import (
 
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
+	"github.com/ghe-wizard/ghe-wizard/internal/scoring"
 	"github.com/ghe-wizard/ghe-wizard/internal/store"
 )
 
@@ -22,6 +23,9 @@ const (
 	maxFailingFindings   = 5
 	responseSnippetLimit = 1024
 )
+
+// httpClient is shared across notifications to enable connection reuse.
+var httpClient = &http.Client{Timeout: httpTimeout}
 
 // Notifier sends a scorecard summary to a ChatOps webhook.
 type Notifier func(ctx context.Context, webhookURL string, sc *engine.Scorecard, drift *store.Drift) error
@@ -79,20 +83,7 @@ func ShouldAlert(sc *engine.Scorecard, drift *store.Drift, minScore int) (bool, 
 }
 
 // Grade returns the A-F grade for a 0-100 score.
-func Grade(score int) string {
-	switch {
-	case score >= 90:
-		return "A"
-	case score >= 75:
-		return "B"
-	case score >= 60:
-		return "C"
-	case score >= 40:
-		return "D"
-	default:
-		return "F"
-	}
-}
+func Grade(score int) string { return scoring.Letter(score) }
 
 type finding struct {
 	ID    string
@@ -147,8 +138,7 @@ func postJSON(ctx context.Context, webhookURL string, payload any) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: httpTimeout}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("notify: post webhook: %w", err)
 	}

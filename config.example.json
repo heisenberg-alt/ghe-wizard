@@ -2,6 +2,7 @@
   "base_url": "https://api.github.com",
   "graphql_url": "https://api.github.com/graphql",
   "max_orgs": 0,
+  "max_repos_per_org": 500,
   "concurrency": 8,
   "thresholds": {
     "max_enterprise_owners": 5,

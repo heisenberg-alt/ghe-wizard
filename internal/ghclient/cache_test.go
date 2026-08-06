@@ -84,7 +84,7 @@ func TestCached_Prefetch(t *testing.T) {
 	c := NewCached(inner, 4)
 	ctx := context.Background()
 
-	c.Prefetch(ctx, "acme", 0)
+	c.Prefetch(ctx, "acme", 0, 0)
 
 	// 3 orgs -> settings and repos fetched once each.
 	if got := atomic.LoadInt64(&inner.setCalls); got != 3 {

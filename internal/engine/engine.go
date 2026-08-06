@@ -58,7 +58,7 @@ func (e *Engine) Assess(ctx context.Context, rs []rules.Rule) *Scorecard {
 	}
 	// Warm per-org caches concurrently before running rules.
 	if c, ok := e.api.(*ghclient.Cached); ok {
-		c.Prefetch(ctx, e.cfg.Enterprise, e.cfg.MaxOrgs)
+		c.Prefetch(ctx, e.cfg.Enterprise, e.cfg.MaxOrgs, e.cfg.MaxReposPerOrg)
 	}
 	sc := &Scorecard{
 		Enterprise:  e.cfg.Enterprise,
@@ -98,7 +98,7 @@ func (e *Engine) AssessStream(ctx context.Context, rs []rules.Rule, emit func(to
 		return ordered[i].Meta().ID < ordered[j].Meta().ID
 	})
 	if c, ok := e.api.(*ghclient.Cached); ok {
-		c.Prefetch(ctx, e.cfg.Enterprise, e.cfg.MaxOrgs)
+		c.Prefetch(ctx, e.cfg.Enterprise, e.cfg.MaxOrgs, e.cfg.MaxReposPerOrg)
 	}
 	sc := &Scorecard{
 		Enterprise:  e.cfg.Enterprise,
@@ -144,7 +144,7 @@ func summarize(results []rules.Result) Summary {
 		ByDomain: map[string]DomainScore{},
 		Total:    len(results),
 	}
-	var scored, passed int
+	var scored int
 	for _, r := range results {
 		s.Counts[string(r.Status)]++
 		d := s.ByDomain[string(r.Meta.Domain)]
@@ -152,14 +152,12 @@ func summarize(results []rules.Result) Summary {
 		case rules.StatusPass:
 			d.Pass++
 			scored++
-			passed++
 		case rules.StatusFail:
 			d.Fail++
 			scored++
 		case rules.StatusWarn:
 			d.Warn++
 			scored++
-			passed++ // warnings count as half below
 		}
 		s.ByDomain[string(r.Meta.Domain)] = d
 	}
