@@ -69,6 +69,7 @@ func ServeWithOptions(opts Options, base *config.Config) error {
 	mux.Handle("/", cacheStatic(http.FileServer(http.FS(sub))))
 	mux.HandleFunc("/api/rules", s.handleRules)
 	mux.HandleFunc("/api/assess", s.handleAssess)
+	mux.HandleFunc("/api/assess/stream", s.handleAssessStream)
 	mux.HandleFunc("/api/apply", s.handleApply)
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/history", s.handleHistory)
@@ -188,7 +189,55 @@ func (s *server) handleAssess(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sc)
 }
 
-// handleHistory returns recent recorded runs for an enterprise.
+// handleAssessStream runs the assessment and streams each rule result as a
+// Server-Sent Events (SSE) message, then a final "done" event with the full
+// scorecard. The client POSTs the same body as /api/assess and reads the
+// response as a stream.
+func (s *server) handleAssessStream(w http.ResponseWriter, r *http.Request) {
+	var b reqBody
+	_ = json.NewDecoder(r.Body).Decode(&b)
+	eng, _, err := s.engineFor(b)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		// Streaming unsupported: fall back to a single JSON response.
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+		defer cancel()
+		sc := eng.Assess(ctx, nil)
+		if s.store != nil {
+			_, _ = s.store.SaveRun(ctx, sc)
+		}
+		writeJSON(w, http.StatusOK, sc)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	send := func(event string, v any) {
+		data, _ := json.Marshal(v)
+		_, _ = w.Write([]byte("event: " + event + "\ndata: "))
+		_, _ = w.Write(data)
+		_, _ = w.Write([]byte("\n\n"))
+		flusher.Flush()
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+
+	sc := eng.AssessStream(ctx, nil, func(total, index int, res rules.Result) {
+		send("result", map[string]any{"total": total, "index": index, "result": res})
+	})
+	if s.store != nil {
+		_, _ = s.store.SaveRun(ctx, sc)
+	}
+	send("done", sc)
+}
 func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		writeJSON(w, http.StatusOK, []any{})

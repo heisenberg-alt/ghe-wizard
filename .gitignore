@@ -2,6 +2,8 @@
 /ghe-wizard
 /ghe-wizard.exe
 *.exe
+*.exe~
+*.db
 
 # Local config with secrets
 config.json

@@ -147,10 +147,54 @@ and from `--fail-on` gating until they expire. See [policy.example.yaml](policy.
 ghe-wizard assess --policy policy.example.yaml
 ```
 
+### Rule profiles & evidence export
+
+Run a curated subset of checks with a **profile**, or export auditor-friendly
+**evidence**:
+
+```bash
+ghe-wizard assess --profile high-security      # only critical/high rules
+ghe-wizard assess --format csv --out evidence.csv
+```
+
+### ChatOps notifications (Slack / Teams)
+
+Post the scorecard (and drift) to a Slack or Microsoft Teams incoming webhook.
+`--notify-only-alert` sends only on a score drop or a newly failing check:
+
+```bash
+ghe-wizard assess --db ghe-wizard.db \
+  --notify-webhook "$SLACK_WEBHOOK" --notify-only-alert
+```
+
+### AI assistance (optional, pluggable)
+
+Point ghe-wizard at any OpenAI-compatible endpoint (OpenAI, Azure OpenAI, GitHub
+Models, or a local server) for plain-English explanations, a prioritized
+remediation plan, and natural-language questions. It is **off by default**, never
+sends tokens/secrets, and no-ops when unconfigured.
+
+```bash
+export GHE_AI_ENDPOINT=https://api.openai.com/v1/chat/completions
+export GHE_AI_MODEL=gpt-4o-mini
+export GHE_AI_KEY=sk-...
+
+ghe-wizard explain SEC-03            # explain a finding + blast radius
+ghe-wizard ai-plan                   # staged remediation plan
+ghe-wizard ask "which orgs lack 2FA and why does it matter?"
+```
+
+### Automations
+
+Ready-to-copy example workflows live in [action/examples/](action/examples):
+weekly **governance issue** upsert, PR **scorecard comment + gating**, and a
+human-in-the-loop **remediation-plan PR** (`apply --dry-run`).
+
 ### Secure the dashboard
 
-The dashboard sets strict security headers and supports optional HTTP basic auth.
-Keep it on localhost, or put it behind a TLS-terminating proxy:
+The dashboard streams live progress (SSE) as each check completes, sets strict
+security headers, and supports optional HTTP basic auth. Keep it on localhost, or
+put it behind a TLS-terminating proxy:
 
 ```bash
 GHE_BASIC_PASS=s3cret ghe-wizard serve --basic-user admin

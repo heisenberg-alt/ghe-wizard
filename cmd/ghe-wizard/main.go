@@ -23,11 +23,14 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ghe-wizard/ghe-wizard/internal/ai"
 	"github.com/ghe-wizard/ghe-wizard/internal/buildinfo"
 	"github.com/ghe-wizard/ghe-wizard/internal/config"
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/ghclient"
+	"github.com/ghe-wizard/ghe-wizard/internal/notify"
 	"github.com/ghe-wizard/ghe-wizard/internal/policy"
+	"github.com/ghe-wizard/ghe-wizard/internal/profile"
 	"github.com/ghe-wizard/ghe-wizard/internal/report"
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
 	_ "github.com/ghe-wizard/ghe-wizard/internal/rules/catalog" // register rules
@@ -59,6 +62,8 @@ func main() {
 		err = cmdList(args)
 	case "history":
 		err = cmdHistory(args)
+	case "explain", "ai-plan", "ask":
+		err = cmdAI(cmd, args)
 	case "version", "--version", "-v":
 		fmt.Println(buildinfo.Get().String())
 		return
@@ -87,6 +92,9 @@ Commands:
   serve     Start the web dashboard
   list      List the best-practice rule catalog
   history   Show recorded assessment history (requires --db)
+  explain   AI: explain a finding (explain <RULE-ID>; needs GHE_AI_* env)
+  ai-plan   AI: prioritized remediation plan (needs GHE_AI_* env)
+  ask       AI: ask a question about the scorecard (needs GHE_AI_* env)
   version   Print version and build information
 
 Global flags (or env GHE_ENTERPRISE / GHE_TOKEN):
@@ -138,10 +146,13 @@ func cmdAssess(args []string) error {
 	enterprise := fs.String("enterprise", "", "enterprise slug")
 	cfgPath := fs.String("config", "", "config file")
 	policyPath := fs.String("policy", "", "config-as-code policy file (YAML): disabled rules, thresholds, waivers")
+	profileName := fs.String("profile", "", "rule profile to run: "+strings.Join(profile.Names(), "|"))
 	dbPath := fs.String("db", "", "record this run to a SQLite history database at this path")
-	format := fs.String("format", "md", "output format: md|json|html")
+	format := fs.String("format", "md", "output format: md|json|html|csv")
 	out := fs.String("out", "", "write output to file instead of stdout")
 	failOn := fs.String("fail-on", "", "exit non-zero if any finding has this status or worse: fail|warn")
+	notifyURL := fs.String("notify-webhook", "", "Slack/Teams incoming-webhook URL to post the scorecard to")
+	notifyOnlyAlert := fs.Bool("notify-only-alert", false, "only send a notification on a score drop or new failure")
 	noPreflight := fs.Bool("no-preflight", false, "skip token scope preflight check")
 	demo := fs.Bool("demo", false, "assess synthetic demo data (no token required)")
 	fs.Parse(args)
@@ -166,16 +177,44 @@ func cmdAssess(args []string) error {
 	}
 	toRun := pol.FilterRules(rules.All())
 
+	// Optional rule profile (e.g. high-security).
+	if *profileName != "" {
+		p, ok := profile.Get(*profileName)
+		if !ok {
+			return fmt.Errorf("unknown profile %q (available: %s)", *profileName, strings.Join(profile.Names(), ", "))
+		}
+		toRun = p.Filter(toRun)
+	}
+
 	ctx := context.Background()
 	sc := eng.Assess(ctx, toRun)
 	if waived := pol.Apply(sc); waived > 0 {
 		fmt.Fprintf(os.Stderr, "applied %d waiver(s) from policy\n", waived)
 	}
 
-	// Persist run + report drift against the previous run.
+	// Persist run + compute drift against the previous run.
+	var drift *store.Drift
 	if *dbPath != "" {
-		if err := recordRun(ctx, *dbPath, sc); err != nil {
+		drift, err = recordRun(ctx, *dbPath, sc)
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "warning: could not record run:", err)
+		}
+	}
+
+	// Optional ChatOps notification.
+	if *notifyURL != "" {
+		send := true
+		if *notifyOnlyAlert {
+			var reason string
+			send, reason = notify.ShouldAlert(sc, drift, 0)
+			if send {
+				fmt.Fprintln(os.Stderr, "alert:", reason)
+			}
+		}
+		if send {
+			if nerr := notify.Send(ctx, *notifyURL, sc, drift); nerr != nil {
+				fmt.Fprintln(os.Stderr, "warning: notification failed:", nerr)
+			}
 		}
 	}
 
@@ -189,6 +228,8 @@ func cmdAssess(args []string) error {
 		data = string(b)
 	case "html":
 		data = report.HTML(sc)
+	case "csv":
+		data = report.EvidenceCSV(sc)
 	default:
 		data = report.Markdown(sc)
 	}
@@ -378,21 +419,21 @@ func confirm(prompt string) bool {
 	return line == "y" || line == "yes"
 }
 
-// recordRun persists a scorecard to the history DB and prints drift vs the
-// previous run to stderr.
-func recordRun(ctx context.Context, dbPath string, sc *engine.Scorecard) error {
+// recordRun persists a scorecard to the history DB, prints drift vs the
+// previous run to stderr, and returns the drift (nil for the first run).
+func recordRun(ctx context.Context, dbPath string, sc *engine.Scorecard) (*store.Drift, error) {
 	st, err := store.Open(dbPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer st.Close()
 	run, err := st.SaveRun(ctx, sc)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	drift, err := st.DriftAgainstPrevious(ctx, run.ID, sc)
 	if err != nil || drift == nil {
-		return err
+		return drift, err
 	}
 	sign := "+"
 	if drift.ScoreDelta < 0 {
@@ -406,7 +447,7 @@ func recordRun(ctx context.Context, dbPath string, sc *engine.Scorecard) error {
 		fmt.Fprintf(os.Stderr, ", newly fixed: %s", strings.Join(drift.NewlyFixed, ","))
 	}
 	fmt.Fprintln(os.Stderr)
-	return nil
+	return drift, nil
 }
 
 // cmdHistory prints recent recorded runs for an enterprise.
@@ -446,5 +487,70 @@ func cmdHistory(args []string) error {
 		fmt.Printf("%-20s %-6d %-5d %-5d %-5d %-6d\n",
 			r.CreatedAt.Format("2006-01-02 15:04"), r.Score, r.Fail, r.Warn, r.Pass, r.Manual)
 	}
+	return nil
+}
+
+// aiClientFromEnv builds an AI client from GHE_AI_ENDPOINT/GHE_AI_MODEL/GHE_AI_KEY.
+func aiClientFromEnv() *ai.Client {
+	return ai.New(ai.Config{
+		Endpoint: os.Getenv("GHE_AI_ENDPOINT"),
+		Model:    os.Getenv("GHE_AI_MODEL"),
+		APIKey:   os.Getenv("GHE_AI_KEY"),
+	})
+}
+
+// cmdAI implements the optional AI-assisted commands: explain <RULE-ID>,
+// ai-plan, and ask "<question>". They run an assessment and then call the
+// configured OpenAI-compatible endpoint. AI is a no-op when unconfigured.
+func cmdAI(sub string, args []string) error {
+	fs := flag.NewFlagSet(sub, flag.ExitOnError)
+	enterprise := fs.String("enterprise", "", "enterprise slug")
+	cfgPath := fs.String("config", "", "config file")
+	demo := fs.Bool("demo", false, "assess synthetic demo data (no token required)")
+	fs.Parse(args)
+	rest := fs.Args()
+
+	client := aiClientFromEnv()
+	if !client.Enabled() {
+		return fmt.Errorf("AI not configured: set GHE_AI_ENDPOINT, GHE_AI_MODEL and GHE_AI_KEY")
+	}
+
+	eng, _, err := buildEngine(fs, *enterprise, *cfgPath, !*demo, *demo)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	sc := eng.Assess(ctx, nil)
+
+	var out string
+	switch sub {
+	case "explain":
+		if len(rest) == 0 {
+			return fmt.Errorf("usage: ghe-wizard explain <RULE-ID>")
+		}
+		id := strings.ToUpper(rest[0])
+		var found *rules.Result
+		for i := range sc.Results {
+			if sc.Results[i].Meta.ID == id {
+				found = &sc.Results[i]
+				break
+			}
+		}
+		if found == nil {
+			return fmt.Errorf("rule %q not found in assessment", id)
+		}
+		out, err = client.Explain(ctx, *found)
+	case "ai-plan":
+		out, err = client.PrioritizePlan(ctx, sc)
+	case "ask":
+		if len(rest) == 0 {
+			return fmt.Errorf("usage: ghe-wizard ask \"<question>\"")
+		}
+		out, err = client.Query(ctx, sc, strings.Join(rest, " "))
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Println(out)
 	return nil
 }

@@ -84,6 +84,41 @@ func (e *Engine) Remediate(ctx context.Context, rs []rules.Rule, dryRun bool) []
 	return out
 }
 
+// AssessStream runs the assessment, invoking emit for each rule result as it
+// completes (in catalog order), then returns the final aggregated scorecard.
+// It is used to power live progress in the dashboard. emit may be nil.
+func (e *Engine) AssessStream(ctx context.Context, rs []rules.Rule, emit func(total, index int, r rules.Result)) *Scorecard {
+	if len(rs) == 0 {
+		rs = rules.All()
+	}
+	// Deterministic order so streamed indices are stable.
+	ordered := make([]rules.Rule, len(rs))
+	copy(ordered, rs)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].Meta().ID < ordered[j].Meta().ID
+	})
+	if c, ok := e.api.(*ghclient.Cached); ok {
+		c.Prefetch(ctx, e.cfg.Enterprise, e.cfg.MaxOrgs)
+	}
+	sc := &Scorecard{
+		Enterprise:  e.cfg.Enterprise,
+		GeneratedAt: time.Now().UTC(),
+	}
+	total := len(ordered)
+	for i, r := range ordered {
+		if ctx.Err() != nil {
+			break
+		}
+		res := r.Assess(ctx, e.api, e.cfg)
+		sc.Results = append(sc.Results, res)
+		if emit != nil {
+			emit(total, i, res)
+		}
+	}
+	sc.Summary = summarize(sc.Results)
+	return sc
+}
+
 // FailingRules assesses and returns the rules whose status is fail or warn.
 func (e *Engine) FailingRules(ctx context.Context, rs []rules.Rule) []rules.Rule {
 	if len(rs) == 0 {

@@ -1,0 +1,340 @@
+# Copy this file to .github/workflows/ghe-governance-scorecard.yml in the
+# repository that should own the tracking issue.
+#
+# Required repository or organization secrets:
+# - GHE_TOKEN: an enterprise-admin token used only by ghe-wizard to read the
+#   GitHub Enterprise settings.
+# - GHE_ENTERPRISE: the GitHub Enterprise slug/account name to assess.
+#
+# Common customizations:
+# - Change the cron schedule below.
+# - Pin GHE_WIZARD_IMAGE to a release tag instead of "latest".
+# - Replace env.GHE_ENTERPRISE with a literal enterprise slug if you do not
+#   want the enterprise name stored as a secret.
+
+name: GHE governance scorecard
+
+on:
+  # Weekly Monday run at 08:00 UTC. Change this cron for your governance cadence.
+  schedule:
+    - cron: "0 8 * * 1"
+  # Manual runs are useful while tuning secrets, schedules, or labels.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  GHE_WIZARD_IMAGE: ghcr.io/heisenberg-alt/ghe-wizard:latest
+  GHE_ENTERPRISE: ${{ secrets.GHE_ENTERPRISE }}
+  SCORECARD_JSON: ghe-wizard-scorecard.json
+  SCORECARD_MD: ghe-wizard-scorecard.md
+  ISSUE_BODY: ghe-wizard-governance-issue.md
+  TOP_FINDINGS_LIMIT: "10"
+
+jobs:
+  assess-and-upsert-issue:
+    name: Assess and upsert tracking issue
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        shell: bash
+        env:
+          GHE_TOKEN: ${{ secrets.GHE_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GHE_ENTERPRISE}" ]; then
+            echo "::error::Set the GHE_ENTERPRISE secret or replace env.GHE_ENTERPRISE with your enterprise slug."
+            exit 1
+          fi
+          if [ -z "${GHE_TOKEN}" ]; then
+            echo "::error::Set the GHE_TOKEN secret with a token that can read enterprise settings."
+            exit 1
+          fi
+
+      - name: Run ghe-wizard assessment
+        shell: bash
+        env:
+          # Credentials are passed only as environment variables and are never echoed.
+          GHE_TOKEN: ${{ secrets.GHE_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          docker pull "${GHE_WIZARD_IMAGE}" >/dev/null
+
+          common_args=(
+            run --rm
+            -e GHE_TOKEN
+            -e GHE_ENTERPRISE
+            -v "${GITHUB_WORKSPACE}:/workspace"
+            -w /workspace
+            "${GHE_WIZARD_IMAGE}"
+            assess
+          )
+
+          # Keep both files so the issue can include a friendly report and
+          # machine-readable data for counts, finding links, and drift.
+          docker "${common_args[@]}" --format json --out "/workspace/${SCORECARD_JSON}"
+          docker "${common_args[@]}" --format md --out "/workspace/${SCORECARD_MD}"
+
+      - name: Build tracking issue body
+        id: body
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          const fs = require('fs');
+
+          const scorecard = JSON.parse(fs.readFileSync(process.env.SCORECARD_JSON, 'utf8'));
+          const report = fs.existsSync(process.env.SCORECARD_MD)
+            ? fs.readFileSync(process.env.SCORECARD_MD, 'utf8').trim()
+            : '';
+          const summary = scorecard.summary || {};
+          const counts = summary.counts || {};
+          const score = Number(summary.score ?? 0);
+          const grade = score >= 90 ? 'A' : score >= 75 ? 'B' : score >= 60 ? 'C' : score >= 40 ? 'D' : 'F';
+          const topLimit = Math.max(1, Number(process.env.TOP_FINDINGS_LIMIT || 10));
+          const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+          const generatedAt = new Date().toISOString();
+
+          const escapeCell = (value) => String(value ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+          const statusCount = (name) => Number(counts[name] ?? 0);
+          const failingFindings = (scorecard.results || [])
+            .filter((result) => String(result.status || '').toLowerCase() === 'fail')
+            .sort((a, b) => String(a.meta?.severity || '').localeCompare(String(b.meta?.severity || '')))
+            .slice(0, topLimit);
+
+          const findingLine = (result) => {
+            const meta = result.meta || {};
+            const id = escapeCell(meta.id || 'unknown');
+            const title = escapeCell(meta.title || 'Untitled finding');
+            const domain = escapeCell(meta.domain || 'general');
+            const severity = escapeCell(meta.severity || 'unknown');
+            const docs = meta.docs_url ? ` — [Docs](${meta.docs_url})` : '';
+            const detail = result.detail ? ` — ${escapeCell(result.detail)}` : '';
+            return `- **${id}: ${title}** (${domain}, ${severity})${docs}${detail}`;
+          };
+
+          const metadata = {
+            generatedAt,
+            score,
+            grade,
+            counts: {
+              pass: statusCount('pass'),
+              fail: statusCount('fail'),
+              warn: statusCount('warn'),
+              manual: statusCount('manual')
+            },
+            failingIds: (scorecard.results || [])
+              .filter((result) => String(result.status || '').toLowerCase() === 'fail')
+              .map((result) => String(result.meta?.id || 'unknown'))
+              .sort()
+          };
+
+          const body = [
+            '# GHE governance scorecard',
+            '',
+            '<!-- ghe-wizard-governance -->',
+            `<!-- ghe-wizard-metadata ${Buffer.from(JSON.stringify(metadata), 'utf8').toString('base64')} -->`,
+            '',
+            `Generated: ${generatedAt}`,
+            `Workflow run: [${process.env.GITHUB_RUN_ID}](${runUrl})`,
+            '',
+            `## Score: ${score} (${grade})`,
+            '',
+            '<!-- drift-section-start -->',
+            '## Drift since previous run',
+            '',
+            'Drift is calculated when this workflow upserts the tracking issue.',
+            '<!-- drift-section-end -->',
+            '',
+            '## Counts',
+            '',
+            '| Status | Count |',
+            '| --- | ---: |',
+            `| Pass | ${metadata.counts.pass} |`,
+            `| Fail | ${metadata.counts.fail} |`,
+            `| Warn | ${metadata.counts.warn} |`,
+            `| Manual | ${metadata.counts.manual} |`,
+            '',
+            `## Top failing findings (up to ${topLimit})`,
+            '',
+            failingFindings.length > 0
+              ? failingFindings.map(findingLine).join('\n')
+              : 'No failing findings were reported.',
+            '',
+            '<details>',
+            '<summary>Full Markdown assessment report</summary>',
+            '',
+            report || '_No Markdown report was generated._',
+            '',
+            '</details>',
+            ''
+          ].join('\n');
+
+          fs.writeFileSync(process.env.ISSUE_BODY, body, 'utf8');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `score=${score}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `grade=${grade}\n`);
+          NODE
+
+      - name: Upsert governance tracking issue
+        uses: actions/github-script@v7
+        env:
+          ISSUE_BODY: ${{ env.ISSUE_BODY }}
+          SCORE: ${{ steps.body.outputs.score }}
+          GRADE: ${{ steps.body.outputs.grade }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+
+            const marker = '<!-- ghe-wizard-governance -->';
+            const metadataPattern = /<!-- ghe-wizard-metadata ([A-Za-z0-9+/=]+) -->/;
+            const driftPattern = /<!-- drift-section-start -->([\s\S]*?)<!-- drift-section-end -->/;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const title = 'GHE governance scorecard';
+            const label = 'governance';
+            const currentBody = fs.readFileSync(process.env.ISSUE_BODY, 'utf8');
+
+            const parseMetadata = (body) => {
+              const match = body?.match(metadataPattern);
+              if (!match) {
+                return undefined;
+              }
+              try {
+                return JSON.parse(Buffer.from(match[1], 'base64').toString('utf8'));
+              } catch (error) {
+                core.warning(`Could not parse previous ghe-wizard metadata: ${error.message}`);
+                return undefined;
+              }
+            };
+
+            const currentMetadata = parseMetadata(currentBody);
+            const previousIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100
+            });
+
+            const trackingIssues = previousIssues
+              .filter((issue) => !issue.pull_request && issue.body?.includes(marker))
+              .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            const trackingIssue = trackingIssues[0];
+            const previousMetadata = parseMetadata(trackingIssue?.body);
+
+            const toSet = (values) => new Set(Array.isArray(values) ? values : []);
+            const currentFailing = toSet(currentMetadata?.failingIds);
+            const previousFailing = toSet(previousMetadata?.failingIds);
+            const newlyFailing = [...currentFailing].filter((id) => !previousFailing.has(id)).sort();
+            const resolved = [...previousFailing].filter((id) => !currentFailing.has(id)).sort();
+            const signedDelta = (value) => `${value >= 0 ? '+' : ''}${value}`;
+            const countDelta = (name) => {
+              const current = Number(currentMetadata?.counts?.[name] ?? 0);
+              const previous = Number(previousMetadata?.counts?.[name] ?? current);
+              return signedDelta(current - previous);
+            };
+
+            const driftLines = previousMetadata
+              ? [
+                  '<!-- drift-section-start -->',
+                  '## Drift since previous run',
+                  '',
+                  `Previous run: ${previousMetadata.generatedAt || 'unknown'}`,
+                  `Score change: ${signedDelta(Number(currentMetadata?.score ?? 0) - Number(previousMetadata.score ?? 0))}`,
+                  '',
+                  '| Status | Delta |',
+                  '| --- | ---: |',
+                  `| Pass | ${countDelta('pass')} |`,
+                  `| Fail | ${countDelta('fail')} |`,
+                  `| Warn | ${countDelta('warn')} |`,
+                  `| Manual | ${countDelta('manual')} |`,
+                  '',
+                  newlyFailing.length > 0
+                    ? `Newly failing: ${newlyFailing.map((id) => `\`${id}\``).join(', ')}`
+                    : 'Newly failing: none',
+                  resolved.length > 0
+                    ? `Resolved since previous run: ${resolved.map((id) => `\`${id}\``).join(', ')}`
+                    : 'Resolved since previous run: none',
+                  '<!-- drift-section-end -->'
+                ]
+              : [
+                  '<!-- drift-section-start -->',
+                  '## Drift since previous run',
+                  '',
+                  'No previous tracking issue was found. This run establishes the drift baseline.',
+                  '<!-- drift-section-end -->'
+                ];
+
+            const bodyWithDrift = currentBody.replace(driftPattern, driftLines.join('\n'));
+
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: label });
+            } catch (error) {
+              if (error.status === 404) {
+                try {
+                  await github.rest.issues.createLabel({
+                    owner,
+                    repo,
+                    name: label,
+                    color: '5319e7',
+                    description: 'GitHub Enterprise governance tracking'
+                  });
+                } catch (createError) {
+                  if (createError.status !== 422) {
+                    throw createError;
+                  }
+                }
+              } else {
+                throw error;
+              }
+            }
+
+            if (trackingIssue) {
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: trackingIssue.number,
+                title,
+                body: bodyWithDrift,
+                labels: [...new Set([...(trackingIssue.labels || []).map((item) => item.name || item), label])]
+              });
+
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: trackingIssue.number,
+                body: `Updated governance scorecard: score ${process.env.SCORE} (${process.env.GRADE}).`
+              });
+
+              for (const duplicate of trackingIssues.slice(1)) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: duplicate.number,
+                  body: `Closing duplicate governance scorecard issue in favor of #${trackingIssue.number}.`
+                });
+                await github.rest.issues.update({
+                  owner,
+                  repo,
+                  issue_number: duplicate.number,
+                  state: 'closed'
+                });
+              }
+            } else {
+              await github.rest.issues.create({
+                owner,
+                repo,
+                title,
+                body: bodyWithDrift,
+                labels: [label]
+              });
+            }

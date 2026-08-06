@@ -84,7 +84,7 @@
     $("#resultRoot").style.display = "none";
     $("#loadingCard").style.display = "";
     try {
-      const sc = await api("/api/assess", body());
+      const sc = await streamAssess();
       state.scorecard = sc;
       render(sc);
       loadTrends();
@@ -101,6 +101,113 @@
       busy(false);
     }
   }
+
+  // streamAssess consumes the SSE endpoint, ticking the live gauge/counters as
+  // each rule completes. Falls back to the plain endpoint if streaming fails.
+  async function streamAssess() {
+    let res;
+    try {
+      res = await fetch("/api/assess/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body()),
+      });
+    } catch (e) {
+      return api("/api/assess", body());
+    }
+    const ctype = res.headers.get("content-type") || "";
+    if (!res.ok) {
+      let msg = `Request failed (${res.status})`;
+      try { const j = await res.json(); if (j && j.error) msg = j.error; } catch {}
+      throw new Error(msg);
+    }
+    if (!res.body || !ctype.includes("text/event-stream")) {
+      return res.json(); // server fell back to a single JSON scorecard
+    }
+
+    // Prime the live view.
+    showLiveScaffold();
+    const counts = { pass: 0, fail: 0, warn: 0, manual: 0, error: 0, waived: 0 };
+    let done = null;
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done: rdone } = await reader.read();
+      if (rdone) break;
+      buf += dec.decode(value, { stream: true });
+      let sep;
+      while ((sep = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, sep); buf = buf.slice(sep + 2);
+        const ev = parseSSE(chunk);
+        if (!ev) continue;
+        if (ev.event === "result") {
+          const st = ev.data.result.status;
+          if (counts[st] != null) counts[st]++;
+          liveTick(ev.data.total, ev.data.index + 1, counts);
+        } else if (ev.event === "done") {
+          done = ev.data;
+        }
+      }
+    }
+    if (!done) throw new Error("stream ended without a result");
+    return done;
+  }
+
+  function parseSSE(chunk) {
+    let event = "message", data = "";
+    for (const line of chunk.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data += line.slice(5).trim();
+    }
+    if (!data) return null;
+    try { return { event, data: JSON.parse(data) }; } catch { return null; }
+  }
+
+  function showLiveScaffold() {
+    $("#loadingCard").style.display = "none";
+    $("#resultRoot").style.display = "";
+    $("#scMeta").textContent = "assessing…";
+    $("#gradeBadge").textContent = "";
+    // Build zeroed stat cards so live ticking has targets.
+    const stats = $("#stats");
+    if (stats) {
+      stats.innerHTML = "";
+      [["fail", "Failing"], ["warn", "Warnings"], ["manual", "Manual"], ["error", "Errors"], ["pass", "Passing"]]
+        .forEach(([k, label]) => {
+          const c = el("div", "stat");
+          c.dataset.f = k;
+          c.innerHTML = `<div class="n" style="color:${DOT[k]}">0</div>
+            <div class="k"><span class="dotk" style="background:${DOT[k]}"></span>${label}</div>`;
+          stats.appendChild(c);
+        });
+    }
+    $("#rows").innerHTML = `<div style="padding:24px;text-align:center;color:var(--fg-muted)">Running checks…</div>`;
+  }
+
+  // liveTick updates the gauge, provisional score and stat cards during streaming.
+  function liveTick(total, completed, counts) {
+    const scored = counts.pass + counts.warn + counts.fail;
+    const provisional = scored ? Math.round((counts.pass + 0.5 * counts.warn) / scored * 100) : 0;
+    const C = 2 * Math.PI * 66;
+    const prog = $("#gaugeProg");
+    prog.style.strokeDasharray = C.toFixed(1);
+    prog.style.strokeDashoffset = (C * (1 - completed / total)).toFixed(1);
+    prog.style.stroke = "var(--accent)";
+    $("#scoreNum").textContent = provisional;
+    $("#scMeta").textContent = `${completed}/${total} checks`;
+    const stats = $("#stats");
+    if (stats) {
+      [["fail", "Failing"], ["warn", "Warnings"], ["manual", "Manual"], ["error", "Errors"], ["pass", "Passing"]]
+        .forEach(([k, label]) => {
+          let cell = stats.querySelector(`[data-f="${k}"] .n`);
+          if (!cell) return;
+          cell.textContent = counts[k] || 0;
+        });
+    }
+  }
+
 
   /* ------------------------------- trends -------------------------------- */
   async function loadTrends() {
