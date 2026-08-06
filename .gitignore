@@ -1,0 +1,11 @@
+# Build artifacts
+/ghe-wizard
+/ghe-wizard.exe
+*.exe
+
+# Local config with secrets
+config.json
+
+# Output reports
+scorecard.json
+*.out

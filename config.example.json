@@ -1,0 +1,9 @@
+{
+  "base_url": "https://api.github.com",
+  "graphql_url": "https://api.github.com/graphql",
+  "max_orgs": 0,
+  "thresholds": {
+    "max_enterprise_owners": 5,
+    "stale_org_days": 180
+  }
+}
