@@ -9,3 +9,7 @@ config.json
 # Output reports
 scorecard.json
 *.out
+
+# Local-only launch material (kept out of the remote repo)
+docs/launch-kit.md
+docs/launch-post.md
