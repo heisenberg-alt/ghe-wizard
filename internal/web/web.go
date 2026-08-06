@@ -4,13 +4,18 @@ package web
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"net/http"
+	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/ghe-wizard/ghe-wizard/internal/buildinfo"
 	"github.com/ghe-wizard/ghe-wizard/internal/config"
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/ghclient"
@@ -21,12 +26,30 @@ import (
 //go:embed ui
 var uiFS embed.FS
 
-// Version is surfaced in the UI and /api/health.
-const Version = "1.0.0"
+// Options configures the dashboard server.
+type Options struct {
+	Addr         string
+	BasicUser    string // optional; when set with BasicPass, enables basic auth
+	BasicPass    string
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+}
 
-// Serve starts the dashboard HTTP server on addr.
+// Serve starts the dashboard HTTP server on addr with sensible defaults.
 func Serve(addr string, base *config.Config) error {
-	s := &server{base: base}
+	return ServeWithOptions(Options{Addr: addr}, base)
+}
+
+// ServeWithOptions starts the dashboard with graceful shutdown, security
+// headers, timeouts and optional HTTP basic auth.
+func ServeWithOptions(opts Options, base *config.Config) error {
+	if opts.ReadTimeout == 0 {
+		opts.ReadTimeout = 15 * time.Second
+	}
+	if opts.WriteTimeout == 0 {
+		opts.WriteTimeout = 3 * time.Minute
+	}
+	s := &server{base: base, opts: opts}
 	mux := http.NewServeMux()
 
 	sub, _ := fsSub()
@@ -36,12 +59,38 @@ func Serve(addr string, base *config.Config) error {
 	mux.HandleFunc("/api/apply", s.handleApply)
 	mux.HandleFunc("/api/health", s.handleHealth)
 
-	srv := &http.Server{Addr: addr, Handler: logMiddleware(mux), ReadHeaderTimeout: 10 * time.Second}
-	return srv.ListenAndServe()
+	handler := securityHeaders(s.auth(mux))
+	srv := &http.Server{
+		Addr:              opts.Addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       opts.ReadTimeout,
+		WriteTimeout:      opts.WriteTimeout,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	// Graceful shutdown on SIGINT/SIGTERM.
+	errc := make(chan error, 1)
+	go func() { errc <- srv.ListenAndServe() }()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	select {
+	case err := <-errc:
+		if err != nil && err != http.ErrServerClosed {
+			return err
+		}
+		return nil
+	case <-stop:
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return srv.Shutdown(ctx)
+	}
 }
 
 type server struct {
 	base *config.Config
+	opts Options
 }
 
 // request-scoped overrides supplied by the UI form.
@@ -87,7 +136,8 @@ func (s *server) handleRules(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":             "ok",
-		"version":            Version,
+		"version":            buildinfo.Get().Version,
+		"commit":             buildinfo.Get().Commit,
 		"rules":              len(rules.All()),
 		"default_enterprise": s.base.Enterprise,
 		"has_server_token":   s.base.Token != "",
@@ -146,10 +196,39 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func logMiddleware(next http.Handler) http.Handler {
+// securityHeaders sets a strict, self-contained set of response headers. The
+// dashboard uses no third-party scripts, so a tight CSP is safe.
+func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Content-Security-Policy",
+			"default-src 'self'; style-src 'self' 'unsafe-inline' https://rsms.me; "+
+				"font-src https://rsms.me; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// auth optionally enforces HTTP basic auth when credentials are configured.
+func (s *server) auth(next http.Handler) http.Handler {
+	if s.opts.BasicUser == "" || s.opts.BasicPass == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, p, ok := r.BasicAuth()
+		if !ok || subtleCompare(u, s.opts.BasicUser) == false || subtleCompare(p, s.opts.BasicPass) == false {
+			w.Header().Set("WWW-Authenticate", `Basic realm="ghe-wizard"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func subtleCompare(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 // cacheStatic adds light caching headers for embedded static assets.

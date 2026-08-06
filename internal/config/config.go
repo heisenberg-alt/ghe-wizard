@@ -26,6 +26,8 @@ type Config struct {
 	DryRun bool `json:"dry_run"`
 	// MaxOrgs caps how many organizations are scanned (0 = no cap).
 	MaxOrgs int `json:"max_orgs"`
+	// Concurrency bounds parallel per-organization API calls (0 = default).
+	Concurrency int `json:"concurrency"`
 }
 
 // Thresholds are tunable limits used by rules.

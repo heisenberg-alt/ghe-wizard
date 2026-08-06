@@ -26,6 +26,10 @@ jobs:
         run: |
           mkdir -p dist
           VERSION="${GITHUB_REF_NAME}"
+          COMMIT="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          BI=github.com/ghe-wizard/ghe-wizard/internal/buildinfo
+          LDFLAGS="-s -w -X ${BI}.Version=${VERSION} -X ${BI}.Commit=${COMMIT} -X ${BI}.Date=${DATE}"
           targets=(
             "linux/amd64"
             "linux/arm64"
@@ -40,7 +44,7 @@ jobs:
             if [ "$os" = "windows" ]; then ext=".exe"; fi
             echo "building $out$ext"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              go build -trimpath -ldflags "-s -w" \
+              go build -trimpath -ldflags "${LDFLAGS}" \
               -o "dist/${out}${ext}" ./cmd/ghe-wizard
             (cd dist && sha256sum "${out}${ext}" >> checksums.txt)
           done

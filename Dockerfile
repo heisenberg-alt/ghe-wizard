@@ -11,7 +11,14 @@ RUN go mod download
 # Build a static binary (UI assets are embedded via go:embed).
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/ghe-wizard ./cmd/ghe-wizard
+ARG COMMIT=none
+ARG DATE=unknown
+RUN CGO_ENABLED=0 go build -trimpath \
+      -ldflags "-s -w \
+        -X github.com/ghe-wizard/ghe-wizard/internal/buildinfo.Version=${VERSION} \
+        -X github.com/ghe-wizard/ghe-wizard/internal/buildinfo.Commit=${COMMIT} \
+        -X github.com/ghe-wizard/ghe-wizard/internal/buildinfo.Date=${DATE}" \
+      -o /out/ghe-wizard ./cmd/ghe-wizard
 
 # ---- runtime stage ----
 FROM gcr.io/distroless/static-debian12:nonroot

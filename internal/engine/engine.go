@@ -41,8 +41,13 @@ type Engine struct {
 	cfg *config.Config
 }
 
-// New builds an Engine.
+// New builds an Engine. If the API is not already a *ghclient.Cached, it is
+// wrapped so identical reads across rules are memoized and org data is fetched
+// concurrently.
 func New(api ghclient.GHAPI, cfg *config.Config) *Engine {
+	if _, ok := api.(*ghclient.Cached); !ok {
+		api = ghclient.NewCached(api, cfg.Concurrency)
+	}
 	return &Engine{api: api, cfg: cfg}
 }
 
@@ -50,6 +55,10 @@ func New(api ghclient.GHAPI, cfg *config.Config) *Engine {
 func (e *Engine) Assess(ctx context.Context, rs []rules.Rule) *Scorecard {
 	if len(rs) == 0 {
 		rs = rules.All()
+	}
+	// Warm per-org caches concurrently before running rules.
+	if c, ok := e.api.(*ghclient.Cached); ok {
+		c.Prefetch(ctx, e.cfg.Enterprise, e.cfg.MaxOrgs)
 	}
 	sc := &Scorecard{
 		Enterprise:  e.cfg.Enterprise,

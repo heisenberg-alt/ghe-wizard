@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ghe-wizard/ghe-wizard/internal/buildinfo"
 	"github.com/ghe-wizard/ghe-wizard/internal/config"
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/ghclient"
@@ -54,6 +55,9 @@ func main() {
 		err = cmdServe(args)
 	case "list":
 		err = cmdList(args)
+	case "version", "--version", "-v":
+		fmt.Println(buildinfo.Get().String())
+		return
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -78,6 +82,7 @@ Commands:
   report    Alias for assess
   serve     Start the web dashboard
   list      List the best-practice rule catalog
+  version   Print version and build information
 
 Global flags (or env GHE_ENTERPRISE / GHE_TOKEN):
   --enterprise SLUG   Enterprise account slug
@@ -88,7 +93,8 @@ Run "ghe-wizard <command> -h" for command flags.
 }
 
 // buildEngine wires config, client and engine, validating required inputs.
-func buildEngine(fs *flag.FlagSet, enterprise, cfgPath string) (*engine.Engine, *config.Config, error) {
+// When preflight is true, it verifies the token and warns about missing scopes.
+func buildEngine(fs *flag.FlagSet, enterprise, cfgPath string, preflight bool) (*engine.Engine, *config.Config, error) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, nil, err
@@ -99,32 +105,49 @@ func buildEngine(fs *flag.FlagSet, enterprise, cfgPath string) (*engine.Engine, 
 	if err := cfg.Validate(); err != nil {
 		return nil, nil, err
 	}
-	api := ghclient.New(cfg.Token, cfg.BaseURL, cfg.GraphQLURL)
-	return engine.New(api, cfg), cfg, nil
+	client := ghclient.New(cfg.Token, cfg.BaseURL, cfg.GraphQLURL)
+	if preflight {
+		if login, _, missing, perr := client.Preflight(context.Background()); perr != nil {
+			return nil, nil, fmt.Errorf("token preflight failed: %w", perr)
+		} else {
+			if login != "" {
+				fmt.Fprintf(os.Stderr, "Authenticated as %s\n", login)
+			}
+			if len(missing) > 0 {
+				fmt.Fprintf(os.Stderr, "warning: token may be missing scopes: %s\n", strings.Join(missing, ", "))
+			}
+		}
+	}
+	return engine.New(client, cfg), cfg, nil
 }
 
 func cmdAssess(args []string) error {
 	fs := flag.NewFlagSet("assess", flag.ExitOnError)
 	enterprise := fs.String("enterprise", "", "enterprise slug")
 	cfgPath := fs.String("config", "", "config file")
-	format := fs.String("format", "md", "output format: md|json")
+	format := fs.String("format", "md", "output format: md|json|html")
 	out := fs.String("out", "", "write output to file instead of stdout")
+	failOn := fs.String("fail-on", "", "exit non-zero if any finding has this status or worse: fail|warn")
+	noPreflight := fs.Bool("no-preflight", false, "skip token scope preflight check")
 	fs.Parse(args)
 
-	eng, _, err := buildEngine(fs, *enterprise, *cfgPath)
+	eng, _, err := buildEngine(fs, *enterprise, *cfgPath, !*noPreflight)
 	if err != nil {
 		return err
 	}
 	sc := eng.Assess(context.Background(), nil)
 
 	var data string
-	if *format == "json" {
+	switch *format {
+	case "json":
 		b, err := report.JSON(sc)
 		if err != nil {
 			return err
 		}
 		data = string(b)
-	} else {
+	case "html":
+		data = report.HTML(sc)
+	default:
 		data = report.Markdown(sc)
 	}
 	if *out != "" {
@@ -132,9 +155,18 @@ func cmdAssess(args []string) error {
 			return err
 		}
 		fmt.Printf("wrote %s (score %d/100)\n", *out, sc.Summary.Score)
-		return nil
+	} else {
+		fmt.Println(data)
 	}
-	fmt.Println(data)
+
+	// CI gating: exit non-zero when findings breach the threshold.
+	if *failOn != "" {
+		fails := sc.Summary.Counts["fail"]
+		warns := sc.Summary.Counts["warn"]
+		if (*failOn == "fail" && fails > 0) || (*failOn == "warn" && (fails > 0 || warns > 0)) {
+			return fmt.Errorf("assessment gate failed: %d failing, %d warnings (--fail-on=%s)", fails, warns, *failOn)
+		}
+	}
 	return nil
 }
 
@@ -147,7 +179,7 @@ func cmdApply(args []string) error {
 	yes := fs.Bool("yes", false, "skip confirmation prompt")
 	fs.Parse(args)
 
-	eng, cfg, err := buildEngine(fs, *enterprise, *cfgPath)
+	eng, cfg, err := buildEngine(fs, *enterprise, *cfgPath, !*dryRun)
 	if err != nil {
 		return err
 	}
@@ -197,7 +229,7 @@ func cmdWizard(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "describe changes without applying")
 	fs.Parse(args)
 
-	eng, cfg, err := buildEngine(fs, *enterprise, *cfgPath)
+	eng, cfg, err := buildEngine(fs, *enterprise, *cfgPath, !*dryRun)
 	if err != nil {
 		return err
 	}
@@ -250,6 +282,8 @@ func cmdServe(args []string) error {
 	enterprise := fs.String("enterprise", "", "enterprise slug")
 	cfgPath := fs.String("config", "", "config file")
 	addr := fs.String("addr", ":8080", "listen address")
+	basicUser := fs.String("basic-user", "", "enable HTTP basic auth with this username")
+	basicPass := fs.String("basic-pass", "", "HTTP basic auth password (or env GHE_BASIC_PASS)")
 	fs.Parse(args)
 
 	cfg, err := config.Load(*cfgPath)
@@ -259,8 +293,18 @@ func cmdServe(args []string) error {
 	if *enterprise != "" {
 		cfg.Enterprise = *enterprise
 	}
-	fmt.Printf("ghe-wizard dashboard listening on http://localhost%s\n", *addr)
-	return web.Serve(*addr, cfg)
+	pass := *basicPass
+	if pass == "" {
+		pass = os.Getenv("GHE_BASIC_PASS")
+	}
+	opts := web.Options{Addr: *addr, BasicUser: *basicUser, BasicPass: pass}
+	authMsg := ""
+	if opts.BasicUser != "" && opts.BasicPass != "" {
+		authMsg = " (basic auth enabled)"
+	}
+	fmt.Printf("ghe-wizard %s dashboard listening on http://localhost%s%s\n", buildinfo.Get().Version, *addr, authMsg)
+	fmt.Println("Press Ctrl+C to stop.")
+	return web.ServeWithOptions(opts, cfg)
 }
 
 func cmdList(args []string) error {
