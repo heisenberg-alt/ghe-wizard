@@ -1,5 +1,9 @@
 # ghe-wizard — GitHub Enterprise Best-Practices Wizard
 
+[![CI](https://github.com/heisenberg-alt/ghe-wizard/actions/workflows/ci.yml/badge.svg)](https://github.com/heisenberg-alt/ghe-wizard/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 An automated **assess → modify → implement** tool for customers adopting **GitHub
 Enterprise Cloud**. It scans an enterprise account against GitHub's recommended
 best practices, produces a scorecard, and can remediate the fixable findings —
@@ -28,6 +32,9 @@ Run `ghe-wizard list` for the full catalog. Rules marked `[remediable]` can be
 applied automatically.
 
 ## Install / build
+
+Download a prebuilt binary from the [Releases](https://github.com/heisenberg-alt/ghe-wizard/releases)
+page (Linux/macOS/Windows, amd64/arm64), or build from source:
 
 ```bash
 go build -o ghe-wizard ./cmd/ghe-wizard
@@ -108,3 +115,13 @@ internal/config/     Config + thresholds loading
 Add a rule by registering a `rules.Base` in an `init()` inside
 `internal/rules/catalog/`. Provide `AssessFn` and, when automatable, a
 `RemediateFn`. It is picked up automatically by the CLI and web server.
+
+## Contributing
+
+Contributions are welcome. CI (build, `go vet`, and race-enabled tests) runs on
+every pull request via [GitHub Actions](.github/workflows/ci.yml). Please keep the
+assessment path read-only and ensure remediations remain idempotent and dry-runnable.
+
+## License
+
+Released under the [MIT License](LICENSE).
