@@ -50,9 +50,9 @@ func init() {
 	rules.Register(rules.Base{
 		M: rules.Meta{
 			ID: "SEC-03", Domain: rules.DomainSecurity, Severity: rules.SeverityHigh,
-			Title:     "Require two-factor authentication",
-			Rationale: "Requiring 2FA protects accounts from credential compromise.",
-			DocsURL:   docsBase + "/admin/enforcing-policies/enforcing-policies-for-security-settings-in-your-enterprise",
+			Title:      "Require two-factor authentication",
+			Rationale:  "Requiring 2FA protects accounts from credential compromise.",
+			DocsURL:    docsBase + "/admin/enforcing-policies/enforcing-policies-for-security-settings-in-your-enterprise",
 			Remediable: true,
 		},
 		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
@@ -132,9 +132,9 @@ func init() {
 	rules.Register(rules.Base{
 		M: rules.Meta{
 			ID: "SEC-05", Domain: rules.DomainSecurity, Severity: rules.SeverityHigh,
-			Title:     "Enable secret scanning and push protection",
-			Rationale: "Secret scanning with push protection prevents credentials from being committed.",
-			DocsURL:   docsBase + "/code-security/securing-your-organization",
+			Title:      "Enable secret scanning and push protection",
+			Rationale:  "Secret scanning with push protection prevents credentials from being committed.",
+			DocsURL:    docsBase + "/code-security/securing-your-organization",
 			Remediable: true,
 		},
 		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {

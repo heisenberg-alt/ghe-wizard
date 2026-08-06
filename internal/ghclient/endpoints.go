@@ -153,13 +153,13 @@ func (c *Client) Organizations(ctx context.Context, slug string, max int) ([]Org
 // OrgSettings reads org-level governance settings via REST.
 func (c *Client) OrgSettings(ctx context.Context, org string) (*OrgSettings, error) {
 	var raw struct {
-		Login                                      string `json:"login"`
-		DefaultRepositoryPermission                string `json:"default_repository_permission"`
-		TwoFactorRequirementEnabled                bool   `json:"two_factor_requirement_enabled"`
-		MembersCanCreateRepositories               bool   `json:"members_can_create_repositories"`
-		AdvancedSecurityEnabledForNewRepositories  bool   `json:"advanced_security_enabled_for_new_repositories"`
-		SecretScanningEnabledForNewRepositories    bool   `json:"secret_scanning_enabled_for_new_repositories"`
-		SecretScanningPushProtectionEnabledForNew  bool   `json:"secret_scanning_push_protection_enabled_for_new_repositories"`
+		Login                                     string `json:"login"`
+		DefaultRepositoryPermission               string `json:"default_repository_permission"`
+		TwoFactorRequirementEnabled               bool   `json:"two_factor_requirement_enabled"`
+		MembersCanCreateRepositories              bool   `json:"members_can_create_repositories"`
+		AdvancedSecurityEnabledForNewRepositories bool   `json:"advanced_security_enabled_for_new_repositories"`
+		SecretScanningEnabledForNewRepositories   bool   `json:"secret_scanning_enabled_for_new_repositories"`
+		SecretScanningPushProtectionEnabledForNew bool   `json:"secret_scanning_push_protection_enabled_for_new_repositories"`
 	}
 	if _, err := c.rest(ctx, "GET", "/orgs/"+org, nil, &raw); err != nil {
 		return nil, err

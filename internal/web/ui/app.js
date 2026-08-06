@@ -344,11 +344,18 @@
 
     // health / prefill
     fetch("/api/health").then(r => r.json()).then(h => {
-      $("#verPill").textContent = "v" + h.version;
+      const v = String(h.version || "");
+      $("#verPill").textContent = v.startsWith("v") ? v : "v" + v;
       $("#ruleCountTxt").textContent = h.rules;
       if (!$("#enterprise").value && h.default_enterprise) $("#enterprise").value = h.default_enterprise;
       if (h.has_server_token) $("#token").placeholder = "Using server token (override optional)";
-      setConn("ok", "Ready");
+      if (h.demo) {
+        if (!$("#enterprise").value) $("#enterprise").value = "acme-corp";
+        $("#token").placeholder = "Demo mode — no token required";
+        setConn("ok", "Demo mode");
+      } else {
+        setConn("ok", "Ready");
+      }
     }).catch(() => setConn("err", "Server unreachable"));
 
     // buttons

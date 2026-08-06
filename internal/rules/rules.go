@@ -36,15 +36,15 @@ const (
 type Domain string
 
 const (
-	DomainEnterprise Domain = "enterprise"
-	DomainOrgs       Domain = "organizations"
-	DomainTeams      Domain = "teams"
-	DomainRepos      Domain = "repositories"
-	DomainPolicies   Domain = "policies"
-	DomainSecurity   Domain = "security"
+	DomainEnterprise  Domain = "enterprise"
+	DomainOrgs        Domain = "organizations"
+	DomainTeams       Domain = "teams"
+	DomainRepos       Domain = "repositories"
+	DomainPolicies    Domain = "policies"
+	DomainSecurity    Domain = "security"
 	DomainInnersource Domain = "innersource"
-	DomainAutomation Domain = "automation"
-	DomainBilling    Domain = "billing"
+	DomainAutomation  Domain = "automation"
+	DomainBilling     Domain = "billing"
 )
 
 // Meta describes a rule.
@@ -60,10 +60,10 @@ type Meta struct {
 
 // Result is the outcome of assessing a rule.
 type Result struct {
-	Meta       Meta     `json:"meta"`
-	Status     Status   `json:"status"`
-	Detail     string   `json:"detail"`
-	Evidence   any      `json:"evidence,omitempty"`
+	Meta     Meta   `json:"meta"`
+	Status   Status `json:"status"`
+	Detail   string `json:"detail"`
+	Evidence any    `json:"evidence,omitempty"`
 	// Remediation summarises what apply-mode would change, when the rule fails.
 	Remediation string `json:"remediation,omitempty"`
 }

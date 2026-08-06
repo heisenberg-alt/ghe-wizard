@@ -93,9 +93,9 @@ func init() {
 	rules.Register(rules.Base{
 		M: rules.Meta{
 			ID: "ORG-04", Domain: rules.DomainOrgs, Severity: rules.SeverityHigh,
-			Title:     "Base repository permission is least-privilege",
-			Rationale: "A permissive default (write/admin) grants all members broad access. Prefer 'none' or 'read' and grant access via teams.",
-			DocsURL:   docsBase + "/organizations/managing-user-access-to-your-organizations-repositories/setting-base-permissions-for-an-organization",
+			Title:      "Base repository permission is least-privilege",
+			Rationale:  "A permissive default (write/admin) grants all members broad access. Prefer 'none' or 'read' and grant access via teams.",
+			DocsURL:    docsBase + "/organizations/managing-user-access-to-your-organizations-repositories/setting-base-permissions-for-an-organization",
 			Remediable: true,
 		},
 		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {

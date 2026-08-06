@@ -3,6 +3,7 @@
 [![CI](https://github.com/heisenberg-alt/ghe-wizard/actions/workflows/ci.yml/badge.svg)](https://github.com/heisenberg-alt/ghe-wizard/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/heisenberg-alt/ghe-wizard?sort=semver)](https://github.com/heisenberg-alt/ghe-wizard/releases)
 
 An automated **assess → modify → implement** tool for customers adopting **GitHub
 Enterprise Cloud**. It scans an enterprise account against GitHub's recommended
@@ -13,6 +14,18 @@ The rule catalog is distilled from GitHub's official
 [Enterprise onboarding](https://docs.github.com/en/enterprise-cloud@latest/enterprise-onboarding)
 and [Best practices for enterprises](https://docs.github.com/en/enterprise-cloud@latest/admin/concepts/enterprise-best-practices)
 documentation.
+
+<p align="center">
+  <img src="docs/media/demo.gif" alt="ghe-wizard dashboard demo: assess, review findings, and preview one-click remediations" width="720">
+</p>
+
+> **Try it in 10 seconds — no GitHub token required:**
+> ```bash
+> go run ./cmd/ghe-wizard serve --demo   # then open http://localhost:8080
+> ```
+> Demo mode runs the real assessment engine against a realistic synthetic
+> enterprise so you can explore the scorecard and remediation flow instantly.
+
 
 ## What it checks (28 rules, 9 domains)
 
@@ -73,8 +86,9 @@ export GHE_ENTERPRISE=octo-enterprise
 # Read-only assessment (Markdown scorecard)
 ghe-wizard assess
 
-# JSON output to a file
+# JSON or self-contained HTML report to a file
 ghe-wizard assess --format json --out scorecard.json
+ghe-wizard assess --format html --out scorecard.html
 
 # Interactive wizard: walk failing rules and remediate with confirmation
 ghe-wizard wizard
@@ -87,7 +101,40 @@ ghe-wizard apply --rules ORG-04,SEC-03
 
 # Web dashboard
 ghe-wizard serve --addr :8080
+
+# Try everything with no token (synthetic data)
+ghe-wizard assess --demo
+ghe-wizard serve --demo
+
+# Print version / list the catalog
+ghe-wizard version
+ghe-wizard list
 ```
+
+### Use in CI
+
+`--fail-on` makes the assessment gate a pipeline. Combine with `--no-preflight`
+when using a fine-grained token.
+
+```bash
+ghe-wizard assess --format json --out scorecard.json --fail-on fail
+# exit code is non-zero if any check is failing
+```
+
+### Secure the dashboard
+
+The dashboard sets strict security headers and supports optional HTTP basic auth.
+Keep it on localhost, or put it behind a TLS-terminating proxy:
+
+```bash
+GHE_BASIC_PASS=s3cret ghe-wizard serve --basic-user admin
+```
+
+## Screenshots
+
+| Scorecard | Findings & remediation |
+|---|---|
+| ![Scorecard](docs/media/frames/f02_scorecard_top.png) | ![Remediation](docs/media/frames/f06_remediation_modal.png) |
 
 ## Safety model
 

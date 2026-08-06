@@ -16,3 +16,6 @@ scorecard.json
 .github
 README.md
 LICENSE
+docs/
+Makefile
+.golangci.yml

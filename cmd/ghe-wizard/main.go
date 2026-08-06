@@ -94,13 +94,20 @@ Run "ghe-wizard <command> -h" for command flags.
 
 // buildEngine wires config, client and engine, validating required inputs.
 // When preflight is true, it verifies the token and warns about missing scopes.
-func buildEngine(fs *flag.FlagSet, enterprise, cfgPath string, preflight bool) (*engine.Engine, *config.Config, error) {
+// When demo is true, a synthetic data source is used and no token is required.
+func buildEngine(fs *flag.FlagSet, enterprise, cfgPath string, preflight, demo bool) (*engine.Engine, *config.Config, error) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, nil, err
 	}
 	if enterprise != "" {
 		cfg.Enterprise = enterprise
+	}
+	if demo {
+		if cfg.Enterprise == "" {
+			cfg.Enterprise = "acme-corp"
+		}
+		return engine.New(ghclient.NewDemoAPI(), cfg), cfg, nil
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, nil, err
@@ -129,9 +136,10 @@ func cmdAssess(args []string) error {
 	out := fs.String("out", "", "write output to file instead of stdout")
 	failOn := fs.String("fail-on", "", "exit non-zero if any finding has this status or worse: fail|warn")
 	noPreflight := fs.Bool("no-preflight", false, "skip token scope preflight check")
+	demo := fs.Bool("demo", false, "assess synthetic demo data (no token required)")
 	fs.Parse(args)
 
-	eng, _, err := buildEngine(fs, *enterprise, *cfgPath, !*noPreflight)
+	eng, _, err := buildEngine(fs, *enterprise, *cfgPath, !*noPreflight && !*demo, *demo)
 	if err != nil {
 		return err
 	}
@@ -179,7 +187,7 @@ func cmdApply(args []string) error {
 	yes := fs.Bool("yes", false, "skip confirmation prompt")
 	fs.Parse(args)
 
-	eng, cfg, err := buildEngine(fs, *enterprise, *cfgPath, !*dryRun)
+	eng, cfg, err := buildEngine(fs, *enterprise, *cfgPath, !*dryRun, false)
 	if err != nil {
 		return err
 	}
@@ -229,7 +237,7 @@ func cmdWizard(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "describe changes without applying")
 	fs.Parse(args)
 
-	eng, cfg, err := buildEngine(fs, *enterprise, *cfgPath, !*dryRun)
+	eng, cfg, err := buildEngine(fs, *enterprise, *cfgPath, !*dryRun, false)
 	if err != nil {
 		return err
 	}
@@ -282,6 +290,7 @@ func cmdServe(args []string) error {
 	enterprise := fs.String("enterprise", "", "enterprise slug")
 	cfgPath := fs.String("config", "", "config file")
 	addr := fs.String("addr", ":8080", "listen address")
+	demo := fs.Bool("demo", false, "serve synthetic demo data (no token required)")
 	basicUser := fs.String("basic-user", "", "enable HTTP basic auth with this username")
 	basicPass := fs.String("basic-pass", "", "HTTP basic auth password (or env GHE_BASIC_PASS)")
 	fs.Parse(args)
@@ -297,10 +306,13 @@ func cmdServe(args []string) error {
 	if pass == "" {
 		pass = os.Getenv("GHE_BASIC_PASS")
 	}
-	opts := web.Options{Addr: *addr, BasicUser: *basicUser, BasicPass: pass}
+	opts := web.Options{Addr: *addr, Demo: *demo, BasicUser: *basicUser, BasicPass: pass}
 	authMsg := ""
 	if opts.BasicUser != "" && opts.BasicPass != "" {
 		authMsg = " (basic auth enabled)"
+	}
+	if opts.Demo {
+		authMsg += " [demo mode]"
 	}
 	fmt.Printf("ghe-wizard %s dashboard listening on http://localhost%s%s\n", buildinfo.Get().Version, *addr, authMsg)
 	fmt.Println("Press Ctrl+C to stop.")

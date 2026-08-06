@@ -28,9 +28,9 @@ func init() {
 	rules.Register(rules.Base{
 		M: rules.Meta{
 			ID: "POL-02", Domain: rules.DomainPolicies, Severity: rules.SeverityHigh,
-			Title:     "Protect important branches with enterprise rulesets",
-			Rationale: "Enterprise rulesets enforce protections (e.g. require pull requests with reviews) across all repositories.",
-			DocsURL:   docsBase + "/enterprise-onboarding/govern-people-and-repositories/protect-branches",
+			Title:      "Protect important branches with enterprise rulesets",
+			Rationale:  "Enterprise rulesets enforce protections (e.g. require pull requests with reviews) across all repositories.",
+			DocsURL:    docsBase + "/enterprise-onboarding/govern-people-and-repositories/protect-branches",
 			Remediable: true,
 		},
 		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
@@ -56,18 +56,18 @@ func init() {
 		RemediateFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config, dryRun bool) rules.RemediationResult {
 			res := rules.RemediationResult{RuleID: "POL-02", DryRun: dryRun}
 			payload := map[string]any{
-				"name":         "Require PR reviews on default branch",
-				"target":       "branch",
-				"enforcement":  "active",
+				"name":        "Require PR reviews on default branch",
+				"target":      "branch",
+				"enforcement": "active",
 				"conditions": map[string]any{
 					"ref_name": map[string]any{"include": []string{"~DEFAULT_BRANCH"}, "exclude": []string{}},
 				},
 				"rules": []map[string]any{
 					{"type": "pull_request", "parameters": map[string]any{
-						"required_approving_review_count": 1,
-						"dismiss_stale_reviews_on_push":    true,
-						"require_code_owner_review":        false,
-						"require_last_push_approval":       false,
+						"required_approving_review_count":   1,
+						"dismiss_stale_reviews_on_push":     true,
+						"require_code_owner_review":         false,
+						"require_last_push_approval":        false,
 						"required_review_thread_resolution": false,
 					}},
 				},

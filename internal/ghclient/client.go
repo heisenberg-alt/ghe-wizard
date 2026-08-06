@@ -86,9 +86,9 @@ type Repository struct {
 }
 
 type CustomProperty struct {
-	Name       string
-	ValueType  string
-	Required   bool
+	Name      string
+	ValueType string
+	Required  bool
 }
 
 type Ruleset struct {
@@ -100,8 +100,8 @@ type Ruleset struct {
 }
 
 type Installation struct {
-	ID     int64
-	AppID  int64
+	ID      int64
+	AppID   int64
 	AppSlug string
 }
 

@@ -28,9 +28,9 @@ func init() {
 	rules.Register(rules.Base{
 		M: rules.Meta{
 			ID: "REPO-02", Domain: rules.DomainRepos, Severity: rules.SeverityMedium,
-			Title:     "Define custom properties for repository governance",
-			Rationale: "Enterprise custom properties give organizations a consistent way to classify repositories and target rulesets/policies.",
-			DocsURL:   docsBase + "/admin/managing-accounts-and-repositories/managing-repositories-in-your-enterprise/managing-custom-properties-for-repositories-in-your-enterprise",
+			Title:      "Define custom properties for repository governance",
+			Rationale:  "Enterprise custom properties give organizations a consistent way to classify repositories and target rulesets/policies.",
+			DocsURL:    docsBase + "/admin/managing-accounts-and-repositories/managing-repositories-in-your-enterprise/managing-custom-properties-for-repositories-in-your-enterprise",
 			Remediable: true,
 		},
 		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {

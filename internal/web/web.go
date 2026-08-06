@@ -31,6 +31,7 @@ type Options struct {
 	Addr         string
 	BasicUser    string // optional; when set with BasicPass, enables basic auth
 	BasicPass    string
+	Demo         bool // serve synthetic data without requiring a token
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 }
@@ -114,6 +115,13 @@ func (s *server) cfgFor(b reqBody) *config.Config {
 
 func (s *server) engineFor(b reqBody) (*engine.Engine, *config.Config, error) {
 	c := s.cfgFor(b)
+	// Demo mode: run the real engine against synthetic data, no token required.
+	if s.opts.Demo || strings.EqualFold(c.Enterprise, "demo") || strings.EqualFold(c.Token, "demo") {
+		if c.Enterprise == "" {
+			c.Enterprise = "acme-corp"
+		}
+		return engine.New(ghclient.NewDemoAPI(), c), c, nil
+	}
 	if err := c.Validate(); err != nil {
 		return nil, nil, err
 	}
@@ -141,6 +149,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"rules":              len(rules.All()),
 		"default_enterprise": s.base.Enterprise,
 		"has_server_token":   s.base.Token != "",
+		"demo":               s.opts.Demo,
 	})
 }
 

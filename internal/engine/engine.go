@@ -14,18 +14,18 @@ import (
 
 // Scorecard aggregates assessment results.
 type Scorecard struct {
-	Enterprise string          `json:"enterprise"`
+	Enterprise  string         `json:"enterprise"`
 	GeneratedAt time.Time      `json:"generated_at"`
-	Results    []rules.Result  `json:"results"`
-	Summary    Summary         `json:"summary"`
+	Results     []rules.Result `json:"results"`
+	Summary     Summary        `json:"summary"`
 }
 
 // Summary counts outcomes and computes a score.
 type Summary struct {
-	Total   int            `json:"total"`
-	Counts  map[string]int `json:"counts"`  // by status
+	Total    int                    `json:"total"`
+	Counts   map[string]int         `json:"counts"` // by status
 	ByDomain map[string]DomainScore `json:"by_domain"`
-	Score   int            `json:"score"` // 0-100 over automatable rules
+	Score    int                    `json:"score"` // 0-100 over automatable rules
 }
 
 // DomainScore is a per-domain roll-up.

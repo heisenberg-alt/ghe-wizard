@@ -17,11 +17,11 @@ func JSON(sc *engine.Scorecard) ([]byte, error) {
 }
 
 var statusIcon = map[rules.Status]string{
-	rules.StatusPass:   "✅",
-	rules.StatusFail:   "❌",
-	rules.StatusWarn:   "⚠️",
-	rules.StatusManual: "📝",
-	rules.StatusError:  "🔥",
+	rules.StatusPass:    "✅",
+	rules.StatusFail:    "❌",
+	rules.StatusWarn:    "⚠️",
+	rules.StatusManual:  "📝",
+	rules.StatusError:   "🔥",
 	rules.StatusSkipped: "➖",
 }
 
