@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest a new best-practice rule or capability
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What best practice, gap, or workflow are you trying to address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the rule or feature. For a new rule, include the GitHub Docs reference it enforces and whether it can be auto-remediated.
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Type
+      options:
+        - New assessment rule
+        - New remediation for an existing rule
+        - CLI enhancement
+        - Web dashboard enhancement
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: docs
+    attributes:
+      label: GitHub Docs reference
+      description: Link to the official best-practice documentation this relates to.
+      placeholder: https://docs.github.com/en/enterprise-cloud@latest/...
+    validations:
+      required: false

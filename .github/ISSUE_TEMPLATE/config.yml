@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/heisenberg-alt/ghe-wizard/security/advisories/new
+    about: Please report security issues privately via a GitHub security advisory, not a public issue.
+  - name: GitHub Enterprise best-practices documentation
+    url: https://docs.github.com/en/enterprise-cloud@latest/admin/concepts/enterprise-best-practices
+    about: The official guidance this tool assesses against.

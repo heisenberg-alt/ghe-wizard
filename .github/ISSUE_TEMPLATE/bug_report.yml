@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a problem with ghe-wizard
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to file a bug report.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including any error output.
+      placeholder: When I run `ghe-wizard assess` ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI (assess/wizard/apply)
+        - Web dashboard
+        - Rule catalog / assessment logic
+        - GitHub API client
+        - Build / install
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of the version pill in the UI, or the release tag you built from.
+      placeholder: v1.0.0
+    validations:
+      required: false
+  - type: input
+    id: platform
+    attributes:
+      label: OS / architecture
+      placeholder: linux/amd64, windows/amd64, darwin/arm64 ...
+    validations:
+      required: false
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands or clicks. Please redact tokens and enterprise names.
+      render: shell
+    validations:
+      required: false

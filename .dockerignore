@@ -1,0 +1,18 @@
+# Build artifacts
+/ghe-wizard
+/ghe-wizard.exe
+*.exe
+/dist/
+
+# Local config with secrets
+config.json
+
+# Output reports
+scorecard.json
+*.out
+
+# Git / CI metadata not needed in the image
+.git
+.github
+README.md
+LICENSE

@@ -40,6 +40,22 @@ page (Linux/macOS/Windows, amd64/arm64), or build from source:
 go build -o ghe-wizard ./cmd/ghe-wizard
 ```
 
+### Docker
+
+A container image is published to GitHub Container Registry:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e GHE_ENTERPRISE=octo-enterprise \
+  -e GHE_TOKEN=ghp_xxx \
+  ghcr.io/heisenberg-alt/ghe-wizard:latest
+# then open http://localhost:8080
+
+# or run the CLI
+docker run --rm -e GHE_ENTERPRISE=octo-enterprise -e GHE_TOKEN=ghp_xxx \
+  ghcr.io/heisenberg-alt/ghe-wizard:latest assess
+```
+
 ## Authentication
 
 Set a Personal Access Token with enterprise admin scopes and your enterprise slug:
