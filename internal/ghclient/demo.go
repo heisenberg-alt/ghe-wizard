@@ -36,7 +36,7 @@ func (d *DemoAPI) EnterpriseOwners(ctx context.Context, slug string) ([]User, er
 	}, nil
 }
 
-func (d *DemoAPI) Organizations(ctx context.Context, slug string, max int) ([]Organization, error) {
+func (d *DemoAPI) Organizations(ctx context.Context, slug string, limit int) ([]Organization, error) {
 	now := time.Now()
 	orgs := []Organization{
 		{Login: "acme-payments", ID: 101, CreatedAt: now.AddDate(-3, 0, 0)},
@@ -45,8 +45,8 @@ func (d *DemoAPI) Organizations(ctx context.Context, slug string, max int) ([]Or
 		{Login: "acme-labs", ID: 104, CreatedAt: now.AddDate(-4, 0, 0)},
 		{Login: "acme-legacy", ID: 105, CreatedAt: now.AddDate(-6, 0, 0)},
 	}
-	if max > 0 && len(orgs) > max {
-		return orgs[:max], nil
+	if limit > 0 && len(orgs) > limit {
+		return orgs[:limit], nil
 	}
 	return orgs, nil
 }
@@ -66,7 +66,7 @@ func (d *DemoAPI) OrgSettings(ctx context.Context, org string) (*OrgSettings, er
 	return &OrgSettings{Login: org, DefaultRepositoryPermission: "read", TwoFactorRequired: true}, nil
 }
 
-func (d *DemoAPI) OrgRepos(ctx context.Context, org string, max int) ([]Repository, error) {
+func (d *DemoAPI) OrgRepos(ctx context.Context, org string, limit int) ([]Repository, error) {
 	now := time.Now()
 	switch org {
 	case "acme-legacy":

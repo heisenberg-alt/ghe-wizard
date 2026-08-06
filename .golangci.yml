@@ -12,6 +12,22 @@ linters:
     - unused
     - misspell
     - unconvert
+    - errcheck
+    - errorlint
+    - gocritic
+    - unparam
+    - bodyclose
+    - gosec
+  settings:
+    errcheck:
+      # Ignoring the error from these is idiomatic (deferred cleanup / never-fail).
+      exclude-functions:
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (*database/sql.DB).Close
+        - (*flag.FlagSet).Parse
 
 issues:
   max-issues-per-linter: 0

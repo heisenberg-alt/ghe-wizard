@@ -56,7 +56,7 @@ func (w Waiver) Expired(now time.Time) bool {
 func Load(path string) (*Policy, error) {
 	p := &Policy{}
 	if path != "" {
-		b, err := os.ReadFile(path)
+		b, err := os.ReadFile(path) // #nosec G304 -- path is an operator-provided --policy file, not attacker input
 		if err != nil {
 			return nil, fmt.Errorf("read policy %q: %w", path, err)
 		}
@@ -122,7 +122,7 @@ func (p *Policy) Apply(sc *engine.Scorecard) int {
 				if w.Reason != "" {
 					r.Detail = fmt.Sprintf("%s [waived: %s]", r.Detail, w.Reason)
 				} else {
-					r.Detail = r.Detail + " [waived]"
+					r.Detail += " [waived]"
 				}
 				waived++
 			}

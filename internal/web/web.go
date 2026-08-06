@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -60,7 +61,7 @@ func ServeWithOptions(opts Options, base *config.Config) error {
 		if err != nil {
 			return fmt.Errorf("open history db: %w", err)
 		}
-		defer st.Close()
+		defer func() { _ = st.Close() }()
 		s.store = st
 	}
 	mux := http.NewServeMux()
@@ -93,7 +94,7 @@ func ServeWithOptions(opts Options, base *config.Config) error {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	select {
 	case err := <-errc:
-		if err != nil && err != http.ErrServerClosed {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		return nil
@@ -129,20 +130,20 @@ func (s *server) cfgFor(b reqBody) *config.Config {
 	return &c
 }
 
-func (s *server) engineFor(b reqBody) (*engine.Engine, *config.Config, error) {
+func (s *server) engineFor(b reqBody) (*engine.Engine, error) {
 	c := s.cfgFor(b)
 	// Demo mode: run the real engine against synthetic data, no token required.
 	if s.opts.Demo || strings.EqualFold(c.Enterprise, "demo") || strings.EqualFold(c.Token, "demo") {
 		if c.Enterprise == "" {
 			c.Enterprise = "acme-corp"
 		}
-		return engine.New(ghclient.NewDemoAPI(), c), c, nil
+		return engine.New(ghclient.NewDemoAPI(), c), nil
 	}
 	if err := c.Validate(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	api := ghclient.New(c.Token, c.BaseURL, c.GraphQLURL)
-	return engine.New(api, c), c, nil
+	return engine.New(api, c), nil
 }
 
 func (s *server) handleRules(w http.ResponseWriter, r *http.Request) {
@@ -173,7 +174,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleAssess(w http.ResponseWriter, r *http.Request) {
 	var b reqBody
 	_ = json.NewDecoder(r.Body).Decode(&b)
-	eng, _, err := s.engineFor(b)
+	eng, err := s.engineFor(b)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -195,7 +196,7 @@ func (s *server) handleAssess(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleAssessStream(w http.ResponseWriter, r *http.Request) {
 	var b reqBody
 	_ = json.NewDecoder(r.Body).Decode(&b)
-	eng, _, err := s.engineFor(b)
+	eng, err := s.engineFor(b)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -273,11 +274,13 @@ func (s *server) handleBadge(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "image/svg+xml")
 	w.Header().Set("Cache-Control", "no-cache")
+	// The badge SVG is generated solely from an integer score (no user-controlled
+	// markup) and served as image/svg+xml, so it is not an XSS vector.
 	if score < 0 {
-		w.Write([]byte(report.Badge(0)))
+		_, _ = w.Write([]byte(report.Badge(0))) // #nosec G705 -- integer-derived SVG, no user input
 		return
 	}
-	w.Write([]byte(report.Badge(score)))
+	_, _ = w.Write([]byte(report.Badge(score))) // #nosec G705 -- integer-derived SVG, no user input
 }
 
 func (s *server) handleApply(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +289,7 @@ func (s *server) handleApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	eng, _, err := s.engineFor(b)
+	eng, err := s.engineFor(b)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

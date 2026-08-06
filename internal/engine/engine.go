@@ -77,7 +77,7 @@ func (e *Engine) Assess(ctx context.Context, rs []rules.Rule) *Scorecard {
 
 // Remediate runs remediations for the supplied rules (typically the failing ones).
 func (e *Engine) Remediate(ctx context.Context, rs []rules.Rule, dryRun bool) []rules.RemediationResult {
-	var out []rules.RemediationResult
+	out := make([]rules.RemediationResult, 0, len(rs))
 	for _, r := range rs {
 		out = append(out, r.Remediate(ctx, e.api, e.cfg, dryRun))
 	}

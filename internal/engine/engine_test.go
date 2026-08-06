@@ -32,7 +32,7 @@ func (m *mockAPI) Enterprise(ctx context.Context, slug string) (*ghclient.Enterp
 func (m *mockAPI) EnterpriseOwners(ctx context.Context, slug string) ([]ghclient.User, error) {
 	return m.owners, nil
 }
-func (m *mockAPI) Organizations(ctx context.Context, slug string, max int) ([]ghclient.Organization, error) {
+func (m *mockAPI) Organizations(ctx context.Context, slug string, limit int) ([]ghclient.Organization, error) {
 	return m.orgs, nil
 }
 func (m *mockAPI) OrgSettings(ctx context.Context, org string) (*ghclient.OrgSettings, error) {
@@ -41,7 +41,7 @@ func (m *mockAPI) OrgSettings(ctx context.Context, org string) (*ghclient.OrgSet
 	}
 	return &ghclient.OrgSettings{Login: org}, nil
 }
-func (m *mockAPI) OrgRepos(ctx context.Context, org string, max int) ([]ghclient.Repository, error) {
+func (m *mockAPI) OrgRepos(ctx context.Context, org string, limit int) ([]ghclient.Repository, error) {
 	return m.orgRepos[org], nil
 }
 func (m *mockAPI) EnterpriseCustomProperties(ctx context.Context, slug string) ([]ghclient.CustomProperty, error) {
@@ -78,7 +78,7 @@ func resultByID(sc *Scorecard, id string) *rules.Result {
 }
 
 func TestAssess_OwnersThreshold(t *testing.T) {
-	// 7 owners exceeds the default max of 5 -> ENT-02 should fail.
+	// 7 owners exceeds the default limit of 5 -> ENT-02 should fail.
 	m := &mockAPI{orgSettings: map[string]*ghclient.OrgSettings{}}
 	for i := 0; i < 7; i++ {
 		m.owners = append(m.owners, ghclient.User{Login: "owner", ID: int64(i)})

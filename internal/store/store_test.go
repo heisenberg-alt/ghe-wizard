@@ -9,8 +9,8 @@ import (
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
 )
 
-func scorecard(ent string, score int, results []rules.Result) *engine.Scorecard {
-	sc := &engine.Scorecard{Enterprise: ent, GeneratedAt: time.Now().UTC(), Results: results}
+func scorecard(results ...rules.Result) *engine.Scorecard {
+	sc := &engine.Scorecard{Enterprise: "acme", GeneratedAt: time.Now().UTC(), Results: results}
 	engine.Recompute(sc)
 	return sc
 }
@@ -24,10 +24,10 @@ func TestSaveAndListRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 
-	sc := scorecard("acme", 0, []rules.Result{res("SEC-01", rules.StatusPass), res("SEC-03", rules.StatusFail)})
+	sc := scorecard(res("SEC-01", rules.StatusPass), res("SEC-03", rules.StatusFail))
 	run, err := st.SaveRun(ctx, sc)
 	if err != nil {
 		t.Fatal(err)
@@ -49,17 +49,17 @@ func TestDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 
 	// Run 1: SEC-03 failing.
-	sc1 := scorecard("acme", 0, []rules.Result{res("SEC-01", rules.StatusPass), res("SEC-03", rules.StatusFail)})
+	sc1 := scorecard(res("SEC-01", rules.StatusPass), res("SEC-03", rules.StatusFail))
 	if _, err := st.SaveRun(ctx, sc1); err != nil {
 		t.Fatal(err)
 	}
 
 	// Run 2: SEC-03 fixed, SEC-01 regressed to fail.
-	sc2 := scorecard("acme", 0, []rules.Result{res("SEC-01", rules.StatusFail), res("SEC-03", rules.StatusPass)})
+	sc2 := scorecard(res("SEC-01", rules.StatusFail), res("SEC-03", rules.StatusPass))
 	run2, err := st.SaveRun(ctx, sc2)
 	if err != nil {
 		t.Fatal(err)
@@ -81,9 +81,9 @@ func TestDrift(t *testing.T) {
 
 func TestDrift_NoPrevious(t *testing.T) {
 	st, _ := Open(":memory:")
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	ctx := context.Background()
-	sc := scorecard("acme", 0, []rules.Result{res("SEC-01", rules.StatusPass)})
+	sc := scorecard(res("SEC-01", rules.StatusPass))
 	run, _ := st.SaveRun(ctx, sc)
 	drift, err := st.DriftAgainstPrevious(ctx, run.ID, sc)
 	if err != nil {

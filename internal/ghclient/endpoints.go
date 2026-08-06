@@ -2,6 +2,7 @@ package ghclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -102,8 +103,8 @@ func (c *Client) EnterpriseOwners(ctx context.Context, slug string) ([]User, err
 	return owners, nil
 }
 
-// Organizations lists organizations owned by the enterprise (capped by max, 0=all).
-func (c *Client) Organizations(ctx context.Context, slug string, max int) ([]Organization, error) {
+// Organizations lists organizations owned by the enterprise (capped by limit, 0=all).
+func (c *Client) Organizations(ctx context.Context, slug string, limit int) ([]Organization, error) {
 	var orgs []Organization
 	var cursor *string
 	for {
@@ -137,7 +138,7 @@ func (c *Client) Organizations(ctx context.Context, slug string, max int) ([]Org
 		}
 		for _, n := range q.Enterprise.Organizations.Nodes {
 			orgs = append(orgs, Organization{Login: n.Login, ID: n.DatabaseID, CreatedAt: n.CreatedAt})
-			if max > 0 && len(orgs) >= max {
+			if limit > 0 && len(orgs) >= limit {
 				return orgs, nil
 			}
 		}
@@ -175,10 +176,10 @@ func (c *Client) OrgSettings(ctx context.Context, org string) (*OrgSettings, err
 	}, nil
 }
 
-// OrgRepos lists repositories in an org via REST (capped by max, 0=all).
+// OrgRepos lists repositories in an org via REST (capped by limit, 0=all).
 // Repositories are requested newest-push first so a bounded scan still yields
 // the most-recently-active repos (used by staleness/innersource checks).
-func (c *Client) OrgRepos(ctx context.Context, org string, max int) ([]Repository, error) {
+func (c *Client) OrgRepos(ctx context.Context, org string, limit int) ([]Repository, error) {
 	var repos []Repository
 	err := c.restPaginated(ctx, "/orgs/"+org+"/repos?per_page=100&type=all&sort=pushed&direction=desc", func(page []byte) error {
 		var batch []struct {
@@ -199,13 +200,13 @@ func (c *Client) OrgRepos(ctx context.Context, org string, max int) ([]Repositor
 				Visibility: r.Visibility, Archived: r.Archived,
 				PushedAt: r.PushedAt, DefaultBranch: r.DefaultBranch,
 			})
-			if max > 0 && len(repos) >= max {
+			if limit > 0 && len(repos) >= limit {
 				return errStopPagination
 			}
 		}
 		return nil
 	})
-	if err != nil && err != errStopPagination {
+	if err != nil && !errors.Is(err, errStopPagination) {
 		return repos, err
 	}
 	return repos, nil

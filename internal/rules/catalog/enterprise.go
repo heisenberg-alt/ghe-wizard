@@ -24,7 +24,7 @@ func init() {
 			if err != nil {
 				return rules.Errored(m, err.Error())
 			}
-			if cap, ok := ent.Capabilities["emu"]; ok && !cap.Determined {
+			if capInfo, ok := ent.Capabilities["emu"]; ok && !capInfo.Determined {
 				return rules.Manual(m, "Enterprise type (EMU vs standard) is not reliably exposed via the API. Confirm your choice is intentional and documented.")
 			}
 			return rules.Pass(m, "Enterprise type detected.", ent.EMU)
@@ -45,18 +45,18 @@ func init() {
 			if err != nil {
 				return rules.Errored(m, err.Error())
 			}
-			max := cfg.Thresholds.MaxEnterpriseOwners
+			maxOwners := cfg.Thresholds.MaxEnterpriseOwners
 			logins := make([]string, 0, len(owners))
 			for _, o := range owners {
 				logins = append(logins, o.Login)
 			}
-			if len(owners) > max {
+			if len(owners) > maxOwners {
 				return rules.Fail(m,
-					fmt.Sprintf("%d enterprise owners exceed the recommended maximum of %d.", len(owners), max),
+					fmt.Sprintf("%d enterprise owners exceed the recommended maximum of %d.", len(owners), maxOwners),
 					"Reduce enterprise owners to the minimum and delegate duties using custom enterprise roles (e.g. auditors, billing managers).",
 					logins)
 			}
-			return rules.Pass(m, fmt.Sprintf("%d enterprise owners (<= %d).", len(owners), max), logins)
+			return rules.Pass(m, fmt.Sprintf("%d enterprise owners (<= %d).", len(owners), maxOwners), logins)
 		},
 	})
 

@@ -108,7 +108,7 @@ Run "ghe-wizard <command> -h" for command flags.
 // buildEngine wires config, client and engine, validating required inputs.
 // When preflight is true, it verifies the token and warns about missing scopes.
 // When demo is true, a synthetic data source is used and no token is required.
-func buildEngine(fs *flag.FlagSet, enterprise, cfgPath string, preflight, demo bool) (*engine.Engine, *config.Config, error) {
+func buildEngine(enterprise, cfgPath string, preflight, demo bool) (*engine.Engine, *config.Config, error) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, nil, err
@@ -127,15 +127,15 @@ func buildEngine(fs *flag.FlagSet, enterprise, cfgPath string, preflight, demo b
 	}
 	client := ghclient.New(cfg.Token, cfg.BaseURL, cfg.GraphQLURL)
 	if preflight {
-		if login, _, missing, perr := client.Preflight(context.Background()); perr != nil {
+		login, _, missing, perr := client.Preflight(context.Background())
+		if perr != nil {
 			return nil, nil, fmt.Errorf("token preflight failed: %w", perr)
-		} else {
-			if login != "" {
-				fmt.Fprintf(os.Stderr, "Authenticated as %s\n", login)
-			}
-			if len(missing) > 0 {
-				fmt.Fprintf(os.Stderr, "warning: token may be missing scopes: %s\n", strings.Join(missing, ", "))
-			}
+		}
+		if login != "" {
+			fmt.Fprintf(os.Stderr, "Authenticated as %s\n", login)
+		}
+		if len(missing) > 0 {
+			fmt.Fprintf(os.Stderr, "warning: token may be missing scopes: %s\n", strings.Join(missing, ", "))
 		}
 	}
 	return engine.New(client, cfg), cfg, nil
@@ -155,9 +155,9 @@ func cmdAssess(args []string) error {
 	notifyOnlyAlert := fs.Bool("notify-only-alert", false, "only send a notification on a score drop or new failure")
 	noPreflight := fs.Bool("no-preflight", false, "skip token scope preflight check")
 	demo := fs.Bool("demo", false, "assess synthetic demo data (no token required)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
-	eng, cfg, err := buildEngine(fs, *enterprise, *cfgPath, !*noPreflight && !*demo, *demo)
+	eng, cfg, err := buildEngine(*enterprise, *cfgPath, !*noPreflight && !*demo, *demo)
 	if err != nil {
 		return err
 	}
@@ -234,7 +234,7 @@ func cmdAssess(args []string) error {
 		data = report.Markdown(sc)
 	}
 	if *out != "" {
-		if err := os.WriteFile(*out, []byte(data), 0o644); err != nil {
+		if err := os.WriteFile(*out, []byte(data), 0o644); err != nil { // #nosec G306 -- report/scorecard output is non-sensitive; world-readable is intentional
 			return err
 		}
 		fmt.Printf("wrote %s (score %d/100)\n", *out, sc.Summary.Score)
@@ -260,9 +260,9 @@ func cmdApply(args []string) error {
 	ruleList := fs.String("rules", "", "comma-separated rule IDs (default: all failing remediable rules)")
 	dryRun := fs.Bool("dry-run", false, "describe changes without applying")
 	yes := fs.Bool("yes", false, "skip confirmation prompt")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
-	eng, cfg, err := buildEngine(fs, *enterprise, *cfgPath, !*dryRun, false)
+	eng, cfg, err := buildEngine(*enterprise, *cfgPath, !*dryRun, false)
 	if err != nil {
 		return err
 	}
@@ -310,9 +310,9 @@ func cmdWizard(args []string) error {
 	cfgPath := fs.String("config", "", "config file")
 	yes := fs.Bool("yes", false, "auto-confirm each remediation")
 	dryRun := fs.Bool("dry-run", false, "describe changes without applying")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
-	eng, cfg, err := buildEngine(fs, *enterprise, *cfgPath, !*dryRun, false)
+	eng, cfg, err := buildEngine(*enterprise, *cfgPath, !*dryRun, false)
 	if err != nil {
 		return err
 	}
@@ -369,7 +369,7 @@ func cmdServe(args []string) error {
 	dbPath := fs.String("db", "", "record runs to a SQLite history DB (enables trends & /badge.svg)")
 	basicUser := fs.String("basic-user", "", "enable HTTP basic auth with this username")
 	basicPass := fs.String("basic-pass", "", "HTTP basic auth password (or env GHE_BASIC_PASS)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -395,7 +395,11 @@ func cmdServe(args []string) error {
 	return web.ServeWithOptions(opts, cfg)
 }
 
-func cmdList(args []string) error {
+// cmdList prints the rule catalog. It returns an error to match the uniform
+// command-handler signature used by the dispatcher, even though it cannot fail.
+//
+//nolint:unparam // uniform command-handler signature
+func cmdList(_ []string) error {
 	all := rules.All()
 	sort.Slice(all, func(i, j int) bool { return all[i].Meta().ID < all[j].Meta().ID })
 	fmt.Printf("%-8s %-14s %-9s %s\n", "ID", "DOMAIN", "SEVERITY", "TITLE")
@@ -426,7 +430,7 @@ func recordRun(ctx context.Context, dbPath string, sc *engine.Scorecard) (*store
 	if err != nil {
 		return nil, err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	run, err := st.SaveRun(ctx, sc)
 	if err != nil {
 		return nil, err
@@ -457,7 +461,7 @@ func cmdHistory(args []string) error {
 	cfgPath := fs.String("config", "", "config file")
 	dbPath := fs.String("db", "ghe-wizard.db", "SQLite history database path")
 	limit := fs.Int("limit", 20, "number of runs to show")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -473,7 +477,7 @@ func cmdHistory(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	runs, err := st.Runs(context.Background(), cfg.Enterprise, *limit)
 	if err != nil {
 		return err
@@ -507,7 +511,7 @@ func cmdAI(sub string, args []string) error {
 	enterprise := fs.String("enterprise", "", "enterprise slug")
 	cfgPath := fs.String("config", "", "config file")
 	demo := fs.Bool("demo", false, "assess synthetic demo data (no token required)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 	rest := fs.Args()
 
 	client := aiClientFromEnv()
@@ -515,7 +519,7 @@ func cmdAI(sub string, args []string) error {
 		return fmt.Errorf("AI not configured: set GHE_AI_ENDPOINT, GHE_AI_MODEL and GHE_AI_KEY")
 	}
 
-	eng, _, err := buildEngine(fs, *enterprise, *cfgPath, !*demo, *demo)
+	eng, _, err := buildEngine(*enterprise, *cfgPath, !*demo, *demo)
 	if err != nil {
 		return err
 	}

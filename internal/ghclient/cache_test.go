@@ -22,7 +22,7 @@ func (c *countingAPI) Enterprise(ctx context.Context, slug string) (*Enterprise,
 func (c *countingAPI) EnterpriseOwners(ctx context.Context, slug string) ([]User, error) {
 	return nil, nil
 }
-func (c *countingAPI) Organizations(ctx context.Context, slug string, max int) ([]Organization, error) {
+func (c *countingAPI) Organizations(ctx context.Context, slug string, limit int) ([]Organization, error) {
 	atomic.AddInt64(&c.orgCalls, 1)
 	return []Organization{{Login: "a"}, {Login: "b"}, {Login: "c"}}, nil
 }
@@ -30,7 +30,7 @@ func (c *countingAPI) OrgSettings(ctx context.Context, org string) (*OrgSettings
 	atomic.AddInt64(&c.setCalls, 1)
 	return &OrgSettings{Login: org}, nil
 }
-func (c *countingAPI) OrgRepos(ctx context.Context, org string, max int) ([]Repository, error) {
+func (c *countingAPI) OrgRepos(ctx context.Context, org string, limit int) ([]Repository, error) {
 	atomic.AddInt64(&c.repoCalls, 1)
 	return nil, nil
 }

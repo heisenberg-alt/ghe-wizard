@@ -57,7 +57,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	if path != "" {
-		b, err := os.ReadFile(path)
+		b, err := os.ReadFile(path) // #nosec G304 -- path is an operator-provided --config file, not attacker input
 		if err != nil {
 			return nil, fmt.Errorf("read config %q: %w", path, err)
 		}

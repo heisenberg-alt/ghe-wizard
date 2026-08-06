@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // pure-Go SQLite driver (registers the "sqlite" sql driver)
 
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
@@ -37,7 +37,7 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1) // SQLite: serialize writers; simplest correct default.
 	s := &Store{db: db}
 	if err := s.migrate(context.Background()); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return s, nil

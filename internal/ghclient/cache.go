@@ -67,15 +67,15 @@ func (c *Cached) EnterpriseOwners(ctx context.Context, slug string) ([]User, err
 	return e.val, e.err
 }
 
-func (c *Cached) Organizations(ctx context.Context, slug string, max int) ([]Organization, error) {
+func (c *Cached) Organizations(ctx context.Context, slug string, limit int) ([]Organization, error) {
 	c.mu.Lock()
-	e := c.orgs[max]
+	e := c.orgs[limit]
 	if e == nil {
 		e = &cacheEntry[[]Organization]{}
-		c.orgs[max] = e
+		c.orgs[limit] = e
 	}
 	c.mu.Unlock()
-	e.once.Do(func() { e.val, e.err = c.inner.Organizations(ctx, slug, max) })
+	e.once.Do(func() { e.val, e.err = c.inner.Organizations(ctx, slug, limit) })
 	return e.val, e.err
 }
 
@@ -91,7 +91,7 @@ func (c *Cached) OrgSettings(ctx context.Context, org string) (*OrgSettings, err
 	return e.val, e.err
 }
 
-func (c *Cached) OrgRepos(ctx context.Context, org string, max int) ([]Repository, error) {
+func (c *Cached) OrgRepos(ctx context.Context, org string, limit int) ([]Repository, error) {
 	key := org
 	c.mu.Lock()
 	e := c.repos[key]
@@ -100,7 +100,7 @@ func (c *Cached) OrgRepos(ctx context.Context, org string, max int) ([]Repositor
 		c.repos[key] = e
 	}
 	c.mu.Unlock()
-	e.once.Do(func() { e.val, e.err = c.inner.OrgRepos(ctx, org, max) })
+	e.once.Do(func() { e.val, e.err = c.inner.OrgRepos(ctx, org, limit) })
 	return e.val, e.err
 }
 

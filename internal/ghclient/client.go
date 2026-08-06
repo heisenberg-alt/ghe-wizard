@@ -19,9 +19,9 @@ import (
 type GHAPI interface {
 	Enterprise(ctx context.Context, slug string) (*Enterprise, error)
 	EnterpriseOwners(ctx context.Context, slug string) ([]User, error)
-	Organizations(ctx context.Context, slug string, max int) ([]Organization, error)
+	Organizations(ctx context.Context, slug string, limit int) ([]Organization, error)
 	OrgSettings(ctx context.Context, org string) (*OrgSettings, error)
-	OrgRepos(ctx context.Context, org string, max int) ([]Repository, error)
+	OrgRepos(ctx context.Context, org string, limit int) ([]Repository, error)
 	EnterpriseCustomProperties(ctx context.Context, slug string) ([]CustomProperty, error)
 	EnterpriseRulesets(ctx context.Context, slug string) ([]Ruleset, error)
 	AuditLogStreamEnabled(ctx context.Context, slug string) (bool, Capability, error)
@@ -193,7 +193,7 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 		}
 		// Rate limited. Respect Retry-After or x-ratelimit-reset when present.
 		wait := rateLimitWait(resp)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if attempt >= maxAttempts || wait <= 0 || wait > 60*time.Second {
 			// Re-issue once more without waiting is pointless; return the response.
 			return c.http.Do(req)
@@ -240,7 +240,7 @@ func (c *Client) restPaginated(ctx context.Context, path string, accumulate func
 		}
 		data, _ := io.ReadAll(resp.Body)
 		link := resp.Header.Get("Link")
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode >= 400 {
 			return fmt.Errorf("GitHub API GET %s: %d %s", url, resp.StatusCode, strings.TrimSpace(string(data)))
 		}
