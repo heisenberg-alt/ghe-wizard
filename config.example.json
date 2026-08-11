@@ -1,6 +1,10 @@
 {
   "base_url": "https://api.github.com",
   "graphql_url": "https://api.github.com/graphql",
+  "server": "",
+  "app_id": 0,
+  "app_installation_id": 0,
+  "app_private_key_path": "",
   "max_orgs": 0,
   "max_repos_per_org": 500,
   "concurrency": 8,

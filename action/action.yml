@@ -24,6 +24,26 @@ inputs:
     description: Upsert a sticky Markdown summary comment on pull requests.
     required: false
     default: 'true'
+  policy:
+    description: Optional workspace-relative path to a config-as-code policy file (YAML) with disabled rules, thresholds and waivers.
+    required: false
+    default: ''
+  profile:
+    description: Optional rule profile to run (for example "baseline", "high-security" or "security-only").
+    required: false
+    default: ''
+  notify-webhook:
+    description: Optional Slack/Teams incoming-webhook URL to post the scorecard to. Store it in a secret; it is passed to the container via environment only.
+    required: false
+    default: ''
+  notify-format:
+    description: Webhook payload format. Supported values are "auto", "slack", "teams", "discord", or "json".
+    required: false
+    default: auto
+  notify-only-alert:
+    description: Only send a notification on a score drop or new failure. Supported values are "true" or "false".
+    required: false
+    default: 'false'
   version:
     description: Container image tag for ghcr.io/heisenberg-alt/ghe-wizard.
     required: false
@@ -55,6 +75,11 @@ runs:
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_FORMAT: ${{ inputs.format }}
         INPUT_OUTPUT: ${{ inputs.output }}
+        INPUT_POLICY: ${{ inputs.policy }}
+        INPUT_PROFILE: ${{ inputs.profile }}
+        INPUT_NOTIFY_WEBHOOK: ${{ inputs.notify-webhook }}
+        INPUT_NOTIFY_FORMAT: ${{ inputs.notify-format }}
+        INPUT_NOTIFY_ONLY_ALERT: ${{ inputs.notify-only-alert }}
         INPUT_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
@@ -79,6 +104,28 @@ runs:
           echo "::error::The 'version' input must be a container tag such as 'latest' or 'v1.2.3'."
           exit 1
         fi
+        if [ -n "${INPUT_POLICY}" ]; then
+          if [[ "${INPUT_POLICY}" = /* || "${INPUT_POLICY}" == *".."* ]]; then
+            echo "::error::The 'policy' input must be a workspace-relative path without '..'."
+            exit 1
+          fi
+          if [ ! -f "${GITHUB_WORKSPACE}/${INPUT_POLICY}" ]; then
+            echo "::error::The 'policy' file was not found in the workspace: ${INPUT_POLICY}"
+            exit 1
+          fi
+        fi
+        if [ -n "${INPUT_PROFILE}" ] && [[ ! "${INPUT_PROFILE}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+          echo "::error::The 'profile' input must be a profile name such as 'high-security'."
+          exit 1
+        fi
+        case "${INPUT_NOTIFY_ONLY_ALERT}" in
+          ""|"true"|"false") ;;
+          *) echo "::error::The 'notify-only-alert' input must be 'true' or 'false'."; exit 1 ;;
+        esac
+        case "${INPUT_NOTIFY_FORMAT}" in
+          ""|"auto"|"slack"|"teams"|"discord"|"json") ;;
+          *) echo "::error::The 'notify-format' input must be 'auto', 'slack', 'teams', 'discord', or 'json'."; exit 1 ;;
+        esac
 
         output="${INPUT_OUTPUT:-scorecard.json}"
         if [[ "${output}" = /* || "${output}" == *".."* ]]; then
@@ -96,7 +143,7 @@ runs:
         export GITHUB_TOKEN="${INPUT_TOKEN}"
         export GHE_ENTERPRISE="${INPUT_ENTERPRISE}"
 
-        common_docker_args=(
+        docker_base=(
           run --rm
           -e GHE_TOKEN
           -e GITHUB_TOKEN
@@ -104,9 +151,16 @@ runs:
           -v "${GITHUB_WORKSPACE}:/workspace"
           -v "${RUNNER_TEMP}/ghe-wizard:/runner-temp"
           -w /workspace
-          "${image}"
-          assess
         )
+
+        # Shared ghe-wizard arguments: governance inputs apply to every run.
+        wizard_args=(assess)
+        if [ -n "${INPUT_POLICY}" ]; then
+          wizard_args+=(--policy "/workspace/${INPUT_POLICY}")
+        fi
+        if [ -n "${INPUT_PROFILE}" ]; then
+          wizard_args+=(--profile "${INPUT_PROFILE}")
+        fi
 
         json_host_path="${GITHUB_WORKSPACE}/${output}"
         json_container_path="/workspace/${output}"
@@ -115,7 +169,21 @@ runs:
           json_container_path="/runner-temp/scorecard.json"
         fi
 
-        json_args=("${common_docker_args[@]}" --format json --out "${json_container_path}")
+        # The webhook travels via environment only (never argv), and only to the
+        # primary JSON run so a secondary format render cannot notify twice.
+        json_docker=("${docker_base[@]}")
+        if [ -n "${INPUT_NOTIFY_WEBHOOK}" ]; then
+          export GHE_NOTIFY_WEBHOOK="${INPUT_NOTIFY_WEBHOOK}"
+          json_docker+=(-e GHE_NOTIFY_WEBHOOK)
+        fi
+
+        json_args=("${json_docker[@]}" "${image}" "${wizard_args[@]}" --format json --out "${json_container_path}")
+        if [ -n "${INPUT_NOTIFY_WEBHOOK}" ] && [ "${INPUT_NOTIFY_ONLY_ALERT}" = "true" ]; then
+          json_args+=(--notify-only-alert)
+        fi
+        if [ -n "${INPUT_NOTIFY_WEBHOOK}" ] && [ -n "${INPUT_NOTIFY_FORMAT}" ] && [ "${INPUT_NOTIFY_FORMAT}" != "auto" ]; then
+          json_args+=(--notify-format "${INPUT_NOTIFY_FORMAT}")
+        fi
         if [ -n "${INPUT_FAIL_ON}" ]; then
           json_args+=(--fail-on "${INPUT_FAIL_ON}")
         fi
@@ -134,7 +202,7 @@ runs:
         fi
 
         if [ "${INPUT_FORMAT}" != "json" ]; then
-          docker "${common_docker_args[@]}" --format "${INPUT_FORMAT}" --out "/workspace/${output}"
+          docker "${docker_base[@]}" "${image}" "${wizard_args[@]}" --format "${INPUT_FORMAT}" --out "/workspace/${output}"
         fi
 
         {

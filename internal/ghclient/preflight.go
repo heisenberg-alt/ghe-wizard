@@ -16,7 +16,11 @@ func (c *Client) Preflight(ctx context.Context) (login string, scopes []string, 
 	if err != nil {
 		return "", nil, nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	bearer, err := c.bearer(ctx)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	req.Header.Set("Authorization", bearer)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
@@ -73,4 +77,12 @@ func hasScope(scopes []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// PreflightAppAuth verifies GitHub App credentials by minting an installation
+// token once. It replaces the /user scope check, which does not apply to
+// installation tokens (they are not users and carry no OAuth scopes).
+func (c *Client) PreflightAppAuth(ctx context.Context) error {
+	_, err := c.auth.Token(ctx)
+	return err
 }

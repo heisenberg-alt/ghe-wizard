@@ -74,12 +74,14 @@ func init() {
 			}
 			res.Changes = append(res.Changes, "create active enterprise branch ruleset 'Require PR reviews on default branch' (1 approval)")
 			if !dryRun {
-				if client, ok := api.(*ghclient.Client); ok {
+				if client, ok := ghclient.Writer(api); ok {
 					if err := client.CreateEnterpriseRuleset(ctx, cfg.Enterprise, payload); err != nil {
 						res.Errors = append(res.Errors, err.Error())
 					} else {
 						res.Applied = true
 					}
+				} else {
+					res.Errors = append(res.Errors, ghclient.ErrReadOnly)
 				}
 			}
 			return res
@@ -117,6 +119,9 @@ func init() {
 		},
 		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
 			m := rules.ByID("POL-04").Meta()
+			if res, ok := skipOnGHES(m, cfg, "Copilot policy management"); ok {
+				return res
+			}
 			return rules.Manual(m, "Review Copilot policies (features, models, duplication detection) and confirm they match your governance requirements.")
 		},
 	})
@@ -125,9 +130,10 @@ func init() {
 	rules.Register(rules.Base{
 		M: rules.Meta{
 			ID: "POL-05", Domain: rules.DomainPolicies, Severity: rules.SeverityHigh,
-			Title:     "Default GITHUB_TOKEN permissions are read-only",
-			Rationale: "A permissive default workflow token ('read and write') broadens the blast radius of a compromised workflow.",
-			DocsURL:   docsBase + "/admin/enforcing-policies/enforcing-policies-for-your-enterprise/enforcing-policies-for-github-actions-in-your-enterprise",
+			Title:      "Default GITHUB_TOKEN permissions are read-only",
+			Rationale:  "A permissive default workflow token ('read and write') broadens the blast radius of a compromised workflow.",
+			DocsURL:    docsBase + "/admin/enforcing-policies/enforcing-policies-for-your-enterprise/enforcing-policies-for-github-actions-in-your-enterprise",
+			Remediable: true,
 		},
 		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
 			m := rules.ByID("POL-05").Meta()
@@ -142,7 +148,57 @@ func init() {
 				return rules.Fail(m, "Default workflow permissions are read and write.",
 					"Set the default GITHUB_TOKEN permissions to read-only at the enterprise level.", nil)
 			default:
-				return rules.Manual(m, "Default workflow permission level not exposed via API. Verify it is set to read-only in Actions policies.")
+				return rules.Manual(m, "Default workflow permission level could not be read. Verify it is set to read-only in Actions policies.")
+			}
+		},
+		RemediateFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config, dryRun bool) rules.RemediationResult {
+			res := rules.RemediationResult{RuleID: "POL-05", DryRun: dryRun}
+			ent, err := api.Enterprise(ctx, cfg.Enterprise)
+			if err != nil {
+				res.Errors = append(res.Errors, err.Error())
+				return res
+			}
+			if ent.DefaultWorkflowPermissions != "write" {
+				return res // compliant or undetermined; nothing to change
+			}
+			res.Changes = append(res.Changes,
+				"set enterprise default GITHUB_TOKEN permissions write -> read (workflows that need write must declare 'permissions:')")
+			if !dryRun {
+				if client, ok := ghclient.Writer(api); ok {
+					if err := client.SetEnterpriseDefaultWorkflowPermissions(ctx, cfg.Enterprise, "read"); err != nil {
+						res.Errors = append(res.Errors, err.Error())
+					} else {
+						res.Applied = true
+					}
+				} else {
+					res.Errors = append(res.Errors, ghclient.ErrReadOnly)
+				}
+			}
+			return res
+		},
+	})
+
+	// POL-06: Restrict which GitHub Actions may run.
+	rules.Register(rules.Base{
+		M: rules.Meta{
+			ID: "POL-06", Domain: rules.DomainPolicies, Severity: rules.SeverityMedium,
+			Title:     "Restrict which GitHub Actions can run",
+			Rationale: "Allowing any public action broadens supply-chain risk; prefer local actions or an allow-list of verified creators.",
+			DocsURL:   docsBase + "/admin/enforcing-policies/enforcing-policies-for-your-enterprise/enforcing-policies-for-github-actions-in-your-enterprise",
+		},
+		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
+			m := rules.ByID("POL-06").Meta()
+			ent, err := api.Enterprise(ctx, cfg.Enterprise)
+			if err != nil {
+				return rules.Errored(m, err.Error())
+			}
+			switch ent.AllowedActions {
+			case "":
+				return rules.Manual(m, "Allowed-actions policy could not be read. Verify it in enterprise Actions policies.")
+			case "all":
+				return rules.Warn(m, "Any public action is allowed across the enterprise. Consider restricting to local or verified actions.", nil)
+			default:
+				return rules.Pass(m, fmt.Sprintf("Actions are restricted (policy: %s).", ent.AllowedActions), nil)
 			}
 		},
 	})

@@ -84,7 +84,10 @@ func init() {
 				res.Errors = append(res.Errors, err.Error())
 				return res
 			}
-			client, ok := api.(*ghclient.Client)
+			client, ok := ghclient.Writer(api)
+			if !dryRun && !ok {
+				res.Errors = append(res.Errors, ghclient.ErrReadOnly)
+			}
 			for _, o := range orgs {
 				s, err := api.OrgSettings(ctx, o.Login)
 				if err != nil || s.TwoFactorRequired {
@@ -113,6 +116,9 @@ func init() {
 		},
 		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
 			m := rules.ByID("SEC-04").Meta()
+			if res, ok := skipOnGHES(m, cfg, "The cloud audit-log streaming API"); ok {
+				return res
+			}
 			enabled, capb, err := api.AuditLogStreamEnabled(ctx, cfg.Enterprise)
 			if err != nil {
 				return rules.Errored(m, err.Error())
@@ -149,15 +155,15 @@ func init() {
 				if err != nil {
 					continue
 				}
-				if !s.SecretScanningPushProtect {
+				if !s.SecretScanningEnabled || !s.SecretScanningPushProtect {
 					missing = append(missing, o.Login)
 				}
 			}
 			if len(missing) > 0 {
-				return rules.Fail(m, fmt.Sprintf("%d organization(s) do not enable push protection for new repos.", len(missing)),
-					"Enable secret scanning push protection for new repositories.", missing)
+				return rules.Fail(m, fmt.Sprintf("%d organization(s) do not enable secret scanning with push protection for new repos.", len(missing)),
+					"Enable secret scanning and push protection for new repositories.", missing)
 			}
-			return rules.Pass(m, "Push protection is enabled for new repos in scanned organizations.", nil)
+			return rules.Pass(m, "Secret scanning and push protection are enabled for new repos in scanned organizations.", nil)
 		},
 		RemediateFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config, dryRun bool) rules.RemediationResult {
 			res := rules.RemediationResult{RuleID: "SEC-05", DryRun: dryRun}
@@ -166,15 +172,79 @@ func init() {
 				res.Errors = append(res.Errors, err.Error())
 				return res
 			}
-			client, ok := api.(*ghclient.Client)
+			client, ok := ghclient.Writer(api)
+			if !dryRun && !ok {
+				res.Errors = append(res.Errors, ghclient.ErrReadOnly)
+			}
 			for _, o := range orgs {
 				s, err := api.OrgSettings(ctx, o.Login)
-				if err != nil || s.SecretScanningPushProtect {
+				if err != nil || (s.SecretScanningEnabled && s.SecretScanningPushProtect) {
 					continue
 				}
-				res.Changes = append(res.Changes, "enable push protection for new repos in "+o.Login)
+				res.Changes = append(res.Changes, "enable secret scanning + push protection for new repos in "+o.Login)
 				if !dryRun && ok {
-					if err := client.SetOrgSecretScanningPushProtection(ctx, o.Login, true); err != nil {
+					if err := client.SetOrgSecretScanningDefaults(ctx, o.Login, true); err != nil {
+						res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", o.Login, err))
+					} else {
+						res.Applied = true
+					}
+				}
+			}
+			return res
+		},
+	})
+
+	// SEC-06: Dependency graph + Dependabot alerts on by default.
+	rules.Register(rules.Base{
+		M: rules.Meta{
+			ID: "SEC-06", Domain: rules.DomainSecurity, Severity: rules.SeverityMedium,
+			Title:      "Enable Dependabot alerts for new repositories",
+			Rationale:  "The dependency graph with Dependabot alerts surfaces vulnerable dependencies automatically across every new repository.",
+			DocsURL:    docsBase + "/code-security/dependabot/dependabot-alerts/about-dependabot-alerts",
+			Remediable: true,
+		},
+		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
+			m := rules.ByID("SEC-06").Meta()
+			orgs, err := api.Organizations(ctx, cfg.Enterprise, cfg.MaxOrgs)
+			if err != nil {
+				return rules.Errored(m, err.Error())
+			}
+			var missing []string
+			for _, o := range orgs {
+				s, err := api.OrgSettings(ctx, o.Login)
+				if err != nil {
+					continue
+				}
+				if !s.DependencyGraphEnabled || !s.DependabotAlertsEnabled {
+					missing = append(missing, o.Login)
+				}
+			}
+			if len(missing) > 0 {
+				return rules.Fail(m, fmt.Sprintf("%d organization(s) do not enable the dependency graph with Dependabot alerts for new repos.", len(missing)),
+					"Enable the dependency graph, Dependabot alerts and security updates for new repositories.", missing)
+			}
+			return rules.Pass(m, "Dependency graph and Dependabot alerts are enabled for new repos in scanned organizations.", nil)
+		},
+		RemediateFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config, dryRun bool) rules.RemediationResult {
+			res := rules.RemediationResult{RuleID: "SEC-06", DryRun: dryRun}
+			orgs, err := api.Organizations(ctx, cfg.Enterprise, cfg.MaxOrgs)
+			if err != nil {
+				res.Errors = append(res.Errors, err.Error())
+				return res
+			}
+			client, ok := ghclient.Writer(api)
+			if !dryRun && !ok {
+				res.Errors = append(res.Errors, ghclient.ErrReadOnly)
+			}
+			for _, o := range orgs {
+				s, err := api.OrgSettings(ctx, o.Login)
+				if err != nil || (s.DependencyGraphEnabled && s.DependabotAlertsEnabled) {
+					continue
+				}
+				res.Changes = append(res.Changes,
+					"enable dependency graph + Dependabot alerts/security updates for new repos in "+o.Login+" (security updates open PRs)")
+				if !dryRun && ok {
+					if err := client.SetOrgDependabotDefaults(ctx, o.Login); err != nil {
 						res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", o.Login, err))
 					} else {
 						res.Applied = true

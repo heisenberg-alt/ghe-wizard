@@ -74,6 +74,63 @@ func TestSecurityOnlyReturnsOnlySecurityDomainRules(t *testing.T) {
 	}
 }
 
+func TestOnboardingIsACuratedIDSet(t *testing.T) {
+	p, ok := Get("onboarding")
+	if !ok {
+		t.Fatal("onboarding profile not found")
+	}
+	all := []rules.Rule{
+		stubRule{meta: rules.Meta{ID: "ENT-01", Domain: rules.DomainEnterprise, Severity: rules.SeverityInfo}},
+		stubRule{meta: rules.Meta{ID: "SEC-03", Domain: rules.DomainSecurity, Severity: rules.SeverityHigh}},
+		stubRule{meta: rules.Meta{ID: "SEC-05", Domain: rules.DomainSecurity, Severity: rules.SeverityHigh}}, // not in the set
+		stubRule{meta: rules.Meta{ID: "BILL-01", Domain: rules.DomainBilling, Severity: rules.SeverityLow}},  // not in the set
+	}
+	got := p.Filter(all)
+	want := map[string]bool{"ENT-01": true, "SEC-03": true}
+	if len(got) != len(want) {
+		t.Fatalf("onboarding returned %d rules, want %d", len(got), len(want))
+	}
+	for _, r := range got {
+		if !want[r.Meta().ID] {
+			t.Fatalf("onboarding included unexpected rule %s", r.Meta().ID)
+		}
+	}
+}
+
+func TestComplianceCoversSecurityAndPolicies(t *testing.T) {
+	p, ok := Get("compliance")
+	if !ok {
+		t.Fatal("compliance profile not found")
+	}
+	all := []rules.Rule{
+		stubRule{meta: rules.Meta{ID: "SEC-001", Domain: rules.DomainSecurity, Severity: rules.SeverityCritical}},
+		stubRule{meta: rules.Meta{ID: "POL-001", Domain: rules.DomainPolicies, Severity: rules.SeverityLow}},
+		stubRule{meta: rules.Meta{ID: "ENT-001", Domain: rules.DomainEnterprise, Severity: rules.SeverityHigh}},
+	}
+	got := p.Filter(all)
+	if len(got) != 2 {
+		t.Fatalf("compliance returned %d rules, want 2", len(got))
+	}
+	for _, r := range got {
+		if d := r.Meta().Domain; d != rules.DomainSecurity && d != rules.DomainPolicies {
+			t.Fatalf("compliance included domain %q", d)
+		}
+	}
+}
+
+func TestNamesIncludesNewProfiles(t *testing.T) {
+	names := Names()
+	seen := map[string]bool{}
+	for _, n := range names {
+		seen[n] = true
+	}
+	for _, want := range []string{"baseline", "high-security", "security-only", "onboarding", "compliance"} {
+		if !seen[want] {
+			t.Fatalf("Names() missing %q: %v", want, names)
+		}
+	}
+}
+
 func testRules() []rules.Rule {
 	return []rules.Rule{
 		stubRule{meta: rules.Meta{ID: "SEC-001", Domain: rules.DomainSecurity, Severity: rules.SeverityCritical}},

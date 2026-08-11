@@ -8,8 +8,8 @@
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
 
-  const ICON = { pass: "✓", fail: "✕", warn: "!", manual: "✎", error: "⚡", skipped: "–" };
-  const STATUS_ORDER = ["fail", "warn", "manual", "error", "pass", "skipped"];
+  const ICON = { pass: "✓", fail: "✕", warn: "!", manual: "✎", waived: "~", error: "⚡", skipped: "–" };
+  const STATUS_ORDER = ["fail", "warn", "manual", "waived", "error", "pass", "skipped"];
 
   const state = {
     scorecard: null,
@@ -62,7 +62,7 @@
 
   const DOT = {
     pass: "var(--pass)", fail: "var(--fail)", warn: "var(--warn)",
-    manual: "var(--manual)", error: "var(--error)", skipped: "var(--fg-subtle)",
+    manual: "var(--manual)", waived: "var(--waived)", error: "var(--error)", skipped: "var(--fg-subtle)",
   };
 
   /* -------------------------------- toast -------------------------------- */
@@ -270,10 +270,12 @@
     const gb = $("#gradeBadge");
     gb.textContent = "Grade " + gr.g; gb.style.color = gr.c; gb.style.background = gr.bg;
 
-    // stat cards
+    // stat cards (waived appears only when the policy waived something)
     const counts = sc.summary.counts || {};
+    const tiles = [["fail","Failing"],["warn","Warnings"],["manual","Manual"],["error","Errors"],["pass","Passing"]];
+    if (counts.waived) tiles.splice(4, 0, ["waived","Waived"]);
     const stats = $("#stats"); stats.innerHTML = "";
-    [["fail","Failing"],["warn","Warnings"],["manual","Manual"],["error","Errors"],["pass","Passing"]].forEach(([k, label]) => {
+    tiles.forEach(([k, label]) => {
       const c = el("div", "stat" + (state.filter === k ? " active" : ""));
       c.dataset.f = k;
       c.innerHTML = `<div class="n" style="color:${DOT[k]}">${counts[k] || 0}</div>
@@ -468,6 +470,25 @@
     toast("ok", "Exported", "Scorecard downloaded as JSON.");
   }
 
+  async function exportCsv() {
+    if (!state.scorecard) return;
+    try {
+      const res = await fetch("/api/export/csv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(state.scorecard),
+      });
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const a = el("a"); a.href = URL.createObjectURL(blob);
+      a.download = `ghe-evidence-${state.scorecard.enterprise}-${new Date().toISOString().slice(0,10)}.csv`;
+      a.click(); URL.revokeObjectURL(a.href);
+      toast("ok", "Exported", "Evidence downloaded as CSV.");
+    } catch (e) {
+      toast("err", "Export failed", e.message);
+    }
+  }
+
   /* -------------------------------- theme -------------------------------- */
   function toggleTheme() {
     const cur = document.documentElement.getAttribute("data-theme");
@@ -501,13 +522,17 @@
       $("#ruleCountTxt").textContent = h.rules;
       if (!$("#enterprise").value && h.default_enterprise) $("#enterprise").value = h.default_enterprise;
       if (h.has_server_token) $("#token").placeholder = "Using server token (override optional)";
+      let ready = "Ready";
       if (h.demo) {
         if (!$("#enterprise").value) $("#enterprise").value = "acme-corp";
         $("#token").placeholder = "Demo mode — no token required";
-        setConn("ok", "Demo mode");
-      } else {
-        setConn("ok", "Ready");
+        ready = "Demo mode";
       }
+      const gov = [];
+      if (h.profile) gov.push(`profile ${h.profile}`);
+      if (h.policy) gov.push("policy loaded");
+      if (gov.length) ready += " · " + gov.join(" · ");
+      setConn("ok", ready);
     }).catch(() => setConn("err", "Server unreachable"));
 
     // buttons
@@ -515,6 +540,7 @@
     $("#previewBtn").onclick = () => openRemediation(state.remediableFailing, null);
     $("#applyBtn").onclick = () => openRemediation(state.remediableFailing, null);
     $("#exportBtn").onclick = exportJson;
+    $("#exportCsvBtn").onclick = exportCsv;
     $("#modalClose").onclick = closeModal;
     $("#modal").addEventListener("click", e => { if (e.target.id === "modal") closeModal(); });
     document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });

@@ -129,7 +129,10 @@ func init() {
 				res.Errors = append(res.Errors, err.Error())
 				return res
 			}
-			client, ok := api.(*ghclient.Client)
+			client, ok := ghclient.Writer(api)
+			if !dryRun && !ok {
+				res.Errors = append(res.Errors, ghclient.ErrReadOnly)
+			}
 			for _, o := range orgs {
 				s, err := api.OrgSettings(ctx, o.Login)
 				if err != nil {
@@ -144,6 +147,65 @@ func init() {
 						} else {
 							res.Applied = true
 						}
+					}
+				}
+			}
+			return res
+		},
+	})
+
+	// ORG-05: Require sign-off on web-based commits.
+	rules.Register(rules.Base{
+		M: rules.Meta{
+			ID: "ORG-05", Domain: rules.DomainOrgs, Severity: rules.SeverityLow,
+			Title:      "Require contributors to sign off on web-based commits",
+			Rationale:  "Web commit sign-off records explicit agreement to contribution terms for changes made through the web UI.",
+			DocsURL:    docsBase + "/organizations/managing-organization-settings/managing-the-commit-signoff-policy-for-your-organization",
+			Remediable: true,
+		},
+		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
+			m := rules.ByID("ORG-05").Meta()
+			orgs, err := api.Organizations(ctx, cfg.Enterprise, cfg.MaxOrgs)
+			if err != nil {
+				return rules.Errored(m, err.Error())
+			}
+			var without []string
+			for _, o := range orgs {
+				s, err := api.OrgSettings(ctx, o.Login)
+				if err != nil {
+					continue
+				}
+				if !s.WebCommitSignoffRequired {
+					without = append(without, o.Login)
+				}
+			}
+			if len(without) > 0 {
+				return rules.Warn(m, fmt.Sprintf("%d organization(s) do not require sign-off on web-based commits.", len(without)), without)
+			}
+			return rules.Pass(m, "Web commit sign-off is required in scanned organizations.", nil)
+		},
+		RemediateFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config, dryRun bool) rules.RemediationResult {
+			res := rules.RemediationResult{RuleID: "ORG-05", DryRun: dryRun}
+			orgs, err := api.Organizations(ctx, cfg.Enterprise, cfg.MaxOrgs)
+			if err != nil {
+				res.Errors = append(res.Errors, err.Error())
+				return res
+			}
+			client, ok := ghclient.Writer(api)
+			if !dryRun && !ok {
+				res.Errors = append(res.Errors, ghclient.ErrReadOnly)
+			}
+			for _, o := range orgs {
+				s, err := api.OrgSettings(ctx, o.Login)
+				if err != nil || s.WebCommitSignoffRequired {
+					continue
+				}
+				res.Changes = append(res.Changes, "require web commit sign-off in "+o.Login)
+				if !dryRun && ok {
+					if err := client.SetOrgWebCommitSignoff(ctx, o.Login, true); err != nil {
+						res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", o.Login, err))
+					} else {
+						res.Applied = true
 					}
 				}
 			}

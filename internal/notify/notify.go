@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
@@ -22,6 +23,7 @@ const (
 	httpTimeout          = 15 * time.Second
 	maxFailingFindings   = 5
 	responseSnippetLimit = 1024
+	discordContentLimit  = 2000
 )
 
 // httpClient is shared across notifications to enable connection reuse.
@@ -32,10 +34,33 @@ type Notifier func(ctx context.Context, webhookURL string, sc *engine.Scorecard,
 
 // Send auto-detects the webhook provider and sends a notification.
 func Send(ctx context.Context, webhookURL string, sc *engine.Scorecard, drift *store.Drift) error {
-	if isTeamsWebhook(webhookURL) {
+	switch {
+	case isTeamsWebhook(webhookURL):
 		return Teams(ctx, webhookURL, sc, drift)
+	case isDiscordWebhook(webhookURL):
+		return Discord(ctx, webhookURL, sc, drift)
+	default:
+		return Slack(ctx, webhookURL, sc, drift)
 	}
-	return Slack(ctx, webhookURL, sc, drift)
+}
+
+// SendFormat dispatches by explicit format: auto (detect from the URL),
+// slack, teams, discord, or json (the stable generic document).
+func SendFormat(ctx context.Context, format, webhookURL string, sc *engine.Scorecard, drift *store.Drift) error {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", "auto":
+		return Send(ctx, webhookURL, sc, drift)
+	case "slack":
+		return Slack(ctx, webhookURL, sc, drift)
+	case "teams":
+		return Teams(ctx, webhookURL, sc, drift)
+	case "discord":
+		return Discord(ctx, webhookURL, sc, drift)
+	case "json", "generic":
+		return Generic(ctx, webhookURL, sc, drift)
+	default:
+		return fmt.Errorf("notify: unknown format %q (use auto|slack|teams|discord|json)", format)
+	}
 }
 
 // Slack posts a Slack incoming-webhook payload summarizing the scorecard.
@@ -66,6 +91,44 @@ func Teams(ctx context.Context, webhookURL string, sc *engine.Scorecard, drift *
 	return postJSON(ctx, webhookURL, payload)
 }
 
+// Discord posts a Discord webhook message summarizing the scorecard. Content
+// is truncated to Discord's 2000-character message limit.
+func Discord(ctx context.Context, webhookURL string, sc *engine.Scorecard, drift *store.Drift) error {
+	if err := validate(webhookURL, sc); err != nil {
+		return err
+	}
+	payload := map[string]string{"content": truncate(discordText(sc, drift), discordContentLimit)}
+	return postJSON(ctx, webhookURL, payload)
+}
+
+// Generic posts a stable, versioned JSON document for arbitrary receivers
+// (schema "ghe-wizard/v1"): enterprise, score, grade, counts, top failing
+// findings and drift.
+func Generic(ctx context.Context, webhookURL string, sc *engine.Scorecard, drift *store.Drift) error {
+	if err := validate(webhookURL, sc); err != nil {
+		return err
+	}
+	payload := genericPayload{
+		Schema:      "ghe-wizard/v1",
+		Enterprise:  sc.Enterprise,
+		GeneratedAt: sc.GeneratedAt,
+		Score:       sc.Summary.Score,
+		Grade:       Grade(sc.Summary.Score),
+		Counts:      sc.Summary.Counts,
+	}
+	for _, f := range failingFindings(sc) {
+		payload.TopFailing = append(payload.TopFailing, genericFinding(f))
+	}
+	if drift != nil {
+		payload.Drift = &genericDrift{
+			ScoreDelta:   drift.ScoreDelta,
+			NewlyFailing: drift.NewlyFailing,
+			NewlyFixed:   drift.NewlyFixed,
+		}
+	}
+	return postJSON(ctx, webhookURL, payload)
+}
+
 // ShouldAlert reports whether a scorecard should trigger a ChatOps notification.
 func ShouldAlert(sc *engine.Scorecard, drift *store.Drift, minScore int) (bool, string) {
 	if drift != nil {
@@ -86,8 +149,33 @@ func ShouldAlert(sc *engine.Scorecard, drift *store.Drift, minScore int) (bool, 
 func Grade(score int) string { return scoring.Letter(score) }
 
 type finding struct {
-	ID    string
-	Title string
+	ID       string
+	Title    string
+	Severity string
+}
+
+// genericPayload is the stable "ghe-wizard/v1" webhook document.
+type genericPayload struct {
+	Schema      string           `json:"schema"`
+	Enterprise  string           `json:"enterprise"`
+	GeneratedAt time.Time        `json:"generated_at"`
+	Score       int              `json:"score"`
+	Grade       string           `json:"grade"`
+	Counts      map[string]int   `json:"counts"`
+	TopFailing  []genericFinding `json:"top_failing"`
+	Drift       *genericDrift    `json:"drift,omitempty"`
+}
+
+type genericFinding struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Severity string `json:"severity"`
+}
+
+type genericDrift struct {
+	ScoreDelta   int      `json:"score_delta"`
+	NewlyFailing []string `json:"newly_failing,omitempty"`
+	NewlyFixed   []string `json:"newly_fixed,omitempty"`
 }
 
 type teamsCard struct {
@@ -122,6 +210,24 @@ func validate(webhookURL string, sc *engine.Scorecard) error {
 func isTeamsWebhook(webhookURL string) bool {
 	u := strings.ToLower(webhookURL)
 	return strings.Contains(u, "webhook.office.com") || strings.Contains(u, "office.com/webhookb2")
+}
+
+func isDiscordWebhook(webhookURL string) bool {
+	u := strings.ToLower(webhookURL)
+	return strings.Contains(u, "discord.com/api/webhooks") || strings.Contains(u, "discordapp.com/api/webhooks")
+}
+
+// truncate shortens s to at most limit bytes without splitting a UTF-8 rune,
+// appending an ellipsis when cut.
+func truncate(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit - len("…")
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 func postJSON(ctx context.Context, webhookURL string, payload any) error {
@@ -159,6 +265,19 @@ func slackText(sc *engine.Scorecard, drift *store.Drift) string {
 	lines := []string{
 		fmt.Sprintf("*GitHub Enterprise assessment: %s*", sc.Enterprise),
 		fmt.Sprintf("Score: *%d* (%s)", sc.Summary.Score, Grade(sc.Summary.Score)),
+		fmt.Sprintf("Counts: fail=%d warn=%d manual=%d pass=%d",
+			count(sc, rules.StatusFail), count(sc, rules.StatusWarn),
+			count(sc, rules.StatusManual), count(sc, rules.StatusPass)),
+	}
+	lines = append(lines, findingsLines("Top failing findings:", "•", sc)...)
+	lines = append(lines, driftLines(drift)...)
+	return strings.Join(lines, "\n")
+}
+
+func discordText(sc *engine.Scorecard, drift *store.Drift) string {
+	lines := []string{
+		fmt.Sprintf("**GitHub Enterprise assessment: %s**", sc.Enterprise),
+		fmt.Sprintf("Score: **%d** (%s)", sc.Summary.Score, Grade(sc.Summary.Score)),
 		fmt.Sprintf("Counts: fail=%d warn=%d manual=%d pass=%d",
 			count(sc, rules.StatusFail), count(sc, rules.StatusWarn),
 			count(sc, rules.StatusManual), count(sc, rules.StatusPass)),
@@ -225,7 +344,7 @@ func failingFindings(sc *engine.Scorecard) []finding {
 		if r.Status != rules.StatusFail {
 			continue
 		}
-		out = append(out, finding{ID: r.Meta.ID, Title: r.Meta.Title})
+		out = append(out, finding{ID: r.Meta.ID, Title: r.Meta.Title, Severity: string(r.Meta.Severity)})
 		if len(out) == maxFailingFindings {
 			break
 		}

@@ -183,6 +183,143 @@ func TestShouldAlert(t *testing.T) {
 	}
 }
 
+func TestDiscordSendsContentPayload(t *testing.T) {
+	sc := testScorecard()
+	drift := &store.Drift{ScoreDelta: -4, NewlyFailing: []string{"SEC-2"}}
+	var payload map[string]string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertJSONPost(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+
+	if err := Discord(context.Background(), ts.URL, sc, drift); err != nil {
+		t.Fatalf("Discord returned error: %v", err)
+	}
+	content := payload["content"]
+	for _, want := range []string{
+		"**GitHub Enterprise assessment: octo-ent**",
+		"Score: **82** (B)",
+		"SEC-1",
+		"Drift: score delta -4",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("Discord content missing %q:\n%s", want, content)
+		}
+	}
+	if len(content) > discordContentLimit {
+		t.Fatalf("content exceeds Discord limit: %d", len(content))
+	}
+}
+
+func TestGenericSendsVersionedDocument(t *testing.T) {
+	sc := testScorecard()
+	drift := &store.Drift{ScoreDelta: -4, NewlyFailing: []string{"SEC-2"}}
+	var payload genericPayload
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertJSONPost(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	if err := Generic(context.Background(), ts.URL, sc, drift); err != nil {
+		t.Fatalf("Generic returned error: %v", err)
+	}
+	if payload.Schema != "ghe-wizard/v1" {
+		t.Fatalf("schema = %q", payload.Schema)
+	}
+	if payload.Enterprise != "octo-ent" || payload.Score != 82 || payload.Grade != "B" {
+		t.Fatalf("summary fields wrong: %+v", payload)
+	}
+	if len(payload.TopFailing) != 2 || payload.TopFailing[0].ID != "SEC-1" || payload.TopFailing[0].Severity != "high" {
+		t.Fatalf("top_failing wrong: %+v", payload.TopFailing)
+	}
+	if payload.Drift == nil || payload.Drift.ScoreDelta != -4 || len(payload.Drift.NewlyFailing) != 1 {
+		t.Fatalf("drift wrong: %+v", payload.Drift)
+	}
+}
+
+func TestSendFormatDispatch(t *testing.T) {
+	sc := testScorecard()
+	var raw map[string]any
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw = map[string]any{}
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cases := []struct {
+		format  string
+		wantKey string
+	}{
+		{"slack", "text"},
+		{"discord", "content"},
+		{"json", "schema"},
+		{"teams", "@type"},
+		{"auto", "text"}, // plain URL auto-detects as Slack
+	}
+	for _, tc := range cases {
+		t.Run(tc.format, func(t *testing.T) {
+			if err := SendFormat(context.Background(), tc.format, ts.URL, sc, nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := raw[tc.wantKey]; !ok {
+				t.Fatalf("format %s: payload missing key %q: %v", tc.format, tc.wantKey, raw)
+			}
+		})
+	}
+	if err := SendFormat(context.Background(), "carrier-pigeon", ts.URL, sc, nil); err == nil {
+		t.Fatal("unknown format should error")
+	}
+}
+
+func TestSendAutoDetectsDiscordWebhook(t *testing.T) {
+	sc := testScorecard()
+	var payload map[string]string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	if err := Send(context.Background(), ts.URL+"/discord.com/api/webhooks/1/x", sc, nil); err != nil {
+		t.Fatalf("Send returned error: %v", err)
+	}
+	if _, ok := payload["content"]; !ok {
+		t.Fatalf("expected Discord content payload, got %v", payload)
+	}
+}
+
+func TestTruncateIsRuneSafe(t *testing.T) {
+	s := strings.Repeat("é", 1500) // 2 bytes per rune = 3000 bytes
+	out := truncate(s, discordContentLimit)
+	if len(out) > discordContentLimit {
+		t.Fatalf("truncated length %d exceeds limit", len(out))
+	}
+	if !strings.HasSuffix(out, "…") {
+		t.Fatal("expected ellipsis suffix")
+	}
+	for _, r := range out {
+		if r == '\uFFFD' {
+			t.Fatal("truncation split a rune")
+		}
+	}
+}
+
 func assertJSONPost(t *testing.T, r *http.Request) {
 	t.Helper()
 	if r.Method != http.MethodPost {

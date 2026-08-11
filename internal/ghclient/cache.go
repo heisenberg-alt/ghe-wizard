@@ -30,6 +30,10 @@ type cacheEntry[T any] struct {
 	err  error
 }
 
+// Unwrap exposes the wrapped API so remediations can reach the write surface
+// (see Writer in helpers.go).
+func (c *Cached) Unwrap() GHAPI { return c.inner }
+
 // NewCached wraps an API with memoization. concurrency bounds parallel org
 // prefetch (defaults to 8 when <= 0).
 func NewCached(inner GHAPI, concurrency int) *Cached {

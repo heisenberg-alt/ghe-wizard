@@ -9,13 +9,15 @@ import (
 
 // Profile describes a named selection of rules.
 //
-// Domains is optional; when empty, rules from every domain are eligible.
+// IDs is optional; when set, only the listed rule IDs are eligible (a curated
+// set). Domains is optional; when empty, rules from every domain are eligible.
 // MinSeverity is optional; when empty, rules of every severity are eligible.
 // Keeping the profile data declarative makes adding future profiles a small
 // registry-only change.
 type Profile struct {
 	Name        string
 	Description string
+	IDs         []string
 	Domains     []rules.Domain
 	MinSeverity rules.Severity
 }
@@ -35,6 +37,19 @@ var registry = map[string]Profile{
 		Description: "Only rules in the security domain.",
 		Domains:     []rules.Domain{rules.DomainSecurity},
 	},
+	"onboarding": {
+		Name:        "onboarding",
+		Description: "Day-one checks from the enterprise onboarding guide.",
+		IDs: []string{
+			"ENT-01", "ENT-02", "ORG-01", "TEAM-01",
+			"SEC-01", "SEC-02", "SEC-03", "POL-02", "REPO-02", "AUTO-01",
+		},
+	},
+	"compliance": {
+		Name:        "compliance",
+		Description: "Security and policy rules for audit evidence.",
+		Domains:     []rules.Domain{rules.DomainSecurity, rules.DomainPolicies},
+	},
 }
 
 // Get returns a copy of a built-in profile by name.
@@ -43,6 +58,7 @@ func Get(name string) (*Profile, bool) {
 	if !ok {
 		return nil, false
 	}
+	p.IDs = append([]string(nil), p.IDs...)
 	p.Domains = append([]rules.Domain(nil), p.Domains...)
 	return &p, true
 }
@@ -75,6 +91,9 @@ func (p *Profile) Filter(all []rules.Rule) []rules.Rule {
 }
 
 func (p *Profile) matches(m rules.Meta) bool {
+	if len(p.IDs) > 0 && !containsID(p.IDs, m.ID) {
+		return false
+	}
 	if len(p.Domains) > 0 && !containsDomain(p.Domains, m.Domain) {
 		return false
 	}
@@ -82,6 +101,15 @@ func (p *Profile) matches(m rules.Meta) bool {
 		return false
 	}
 	return true
+}
+
+func containsID(ids []string, id string) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
 }
 
 func containsDomain(domains []rules.Domain, d rules.Domain) bool {

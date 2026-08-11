@@ -20,6 +20,9 @@ func init() {
 		},
 		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
 			m := rules.ByID("ENT-01").Meta()
+			if res, ok := skipOnGHES(m, cfg, "Enterprise Managed Users"); ok {
+				return res
+			}
 			ent, err := api.Enterprise(ctx, cfg.Enterprise)
 			if err != nil {
 				return rules.Errored(m, err.Error())

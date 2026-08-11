@@ -2,29 +2,59 @@ package ghclient
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
 // DemoAPI is a built-in, credential-free data source that returns realistic
 // synthetic data for evaluation and demos. It implements GHAPI, so the real
 // assessment engine runs against it unchanged and produces a representative
-// mix of pass/fail/warn/manual findings.
-type DemoAPI struct{}
+// mix of pass/fail/warn/manual findings. It also implements WriteAPI with
+// in-memory state, so demo-mode remediations visibly improve subsequent
+// assessments within the same process (e.g. the dashboard's apply flow).
+type DemoAPI struct {
+	mu           sync.Mutex
+	basePerm     map[string]string // org -> overridden default repository permission
+	twoFA        map[string]bool   // org -> overridden 2FA requirement
+	secretScan   map[string]bool   // org -> overridden secret-scanning + push-protection defaults
+	dependabot   map[string]bool   // org -> overridden dependency-graph/Dependabot defaults
+	publicRepo   map[string]bool   // org -> overridden members-can-create-public-repos
+	signoff      map[string]bool   // org -> overridden web-commit-signoff requirement
+	workflowPerm string            // overridden enterprise default workflow permissions
+	props        []CustomProperty  // custom properties added via remediation
+	rulesets     []Ruleset         // rulesets created via remediation
+}
 
 // NewDemoAPI returns a demo data source.
-func NewDemoAPI() *DemoAPI { return &DemoAPI{} }
+func NewDemoAPI() *DemoAPI {
+	return &DemoAPI{
+		basePerm:   map[string]string{},
+		twoFA:      map[string]bool{},
+		secretScan: map[string]bool{},
+		dependabot: map[string]bool{},
+		publicRepo: map[string]bool{},
+		signoff:    map[string]bool{},
+	}
+}
 
 func (d *DemoAPI) Enterprise(ctx context.Context, slug string) (*Enterprise, error) {
-	return &Enterprise{
+	ent := &Enterprise{
 		Slug:                       slug,
 		Name:                       "Acme Corporation",
 		SAMLEnabled:                true,
 		IPAllowListEnabled:         false,
 		DefaultWorkflowPermissions: "write",
+		AllowedActions:             "all",
 		Capabilities: map[string]Capability{
 			"emu": {Determined: false, Reason: "EMU type not exposed via API; confirm manually"},
 		},
-	}, nil
+	}
+	d.mu.Lock()
+	if d.workflowPerm != "" {
+		ent.DefaultWorkflowPermissions = d.workflowPerm
+	}
+	d.mu.Unlock()
+	return ent, nil
 }
 
 func (d *DemoAPI) EnterpriseOwners(ctx context.Context, slug string) ([]User, error) {
@@ -54,16 +84,58 @@ func (d *DemoAPI) Organizations(ctx context.Context, slug string, limit int) ([]
 func (d *DemoAPI) OrgSettings(ctx context.Context, org string) (*OrgSettings, error) {
 	// A deliberate mix so security/permission rules produce varied results.
 	settings := map[string]*OrgSettings{
-		"acme-payments": {Login: org, DefaultRepositoryPermission: "read", TwoFactorRequired: true, MembersCanCreateRepos: false, SecretScanningPushProtect: true},
-		"acme-platform": {Login: org, DefaultRepositoryPermission: "read", TwoFactorRequired: true, MembersCanCreateRepos: true, SecretScanningPushProtect: true},
-		"acme-web":      {Login: org, DefaultRepositoryPermission: "write", TwoFactorRequired: false, MembersCanCreateRepos: true, SecretScanningPushProtect: false},
-		"acme-labs":     {Login: org, DefaultRepositoryPermission: "read", TwoFactorRequired: false, MembersCanCreateRepos: true, SecretScanningPushProtect: false},
-		"acme-legacy":   {Login: org, DefaultRepositoryPermission: "admin", TwoFactorRequired: false, MembersCanCreateRepos: true, SecretScanningPushProtect: false},
+		"acme-payments": {Login: org, DefaultRepositoryPermission: "read", TwoFactorRequired: true,
+			SecretScanningEnabled: true, SecretScanningPushProtect: true,
+			DependencyGraphEnabled: true, DependabotAlertsEnabled: true, DependabotSecurityUpdates: true,
+			WebCommitSignoffRequired: true},
+		"acme-platform": {Login: org, DefaultRepositoryPermission: "read", TwoFactorRequired: true,
+			MembersCanCreateRepos: true,
+			SecretScanningEnabled: true, SecretScanningPushProtect: true,
+			DependencyGraphEnabled: true, DependabotAlertsEnabled: true},
+		"acme-web": {Login: org, DefaultRepositoryPermission: "write",
+			MembersCanCreateRepos: true, MembersCanCreatePublicRepos: true},
+		"acme-labs": {Login: org, DefaultRepositoryPermission: "read",
+			MembersCanCreateRepos: true},
+		"acme-legacy": {Login: org, DefaultRepositoryPermission: "admin",
+			MembersCanCreateRepos: true, MembersCanCreatePublicRepos: true},
 	}
 	if s, ok := settings[org]; ok {
+		d.applyOverrides(s)
 		return s, nil
 	}
-	return &OrgSettings{Login: org, DefaultRepositoryPermission: "read", TwoFactorRequired: true}, nil
+	s := &OrgSettings{Login: org, DefaultRepositoryPermission: "read", TwoFactorRequired: true,
+		SecretScanningEnabled: true, SecretScanningPushProtect: true,
+		DependencyGraphEnabled: true, DependabotAlertsEnabled: true,
+		WebCommitSignoffRequired: true}
+	d.applyOverrides(s)
+	return s, nil
+}
+
+// applyOverrides layers any demo-remediation state onto freshly built settings.
+func (d *DemoAPI) applyOverrides(s *OrgSettings) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if p, ok := d.basePerm[s.Login]; ok {
+		s.DefaultRepositoryPermission = p
+	}
+	if v, ok := d.twoFA[s.Login]; ok {
+		s.TwoFactorRequired = v
+	}
+	if v, ok := d.secretScan[s.Login]; ok {
+		s.SecretScanningEnabled = v
+		s.SecretScanningPushProtect = v
+	}
+	if v, ok := d.dependabot[s.Login]; ok {
+		s.DependencyGraphEnabled = v
+		s.DependabotAlertsEnabled = v
+		s.DependabotSecurityUpdates = v
+	}
+	if v, ok := d.publicRepo[s.Login]; ok {
+		s.MembersCanCreatePublicRepos = v
+	}
+	if v, ok := d.signoff[s.Login]; ok {
+		s.WebCommitSignoffRequired = v
+	}
 }
 
 func (d *DemoAPI) OrgRepos(ctx context.Context, org string, limit int) ([]Repository, error) {
@@ -86,14 +158,20 @@ func (d *DemoAPI) OrgRepos(ctx context.Context, org string, limit int) ([]Reposi
 }
 
 func (d *DemoAPI) EnterpriseCustomProperties(ctx context.Context, slug string) ([]CustomProperty, error) {
-	return []CustomProperty{
+	base := []CustomProperty{
 		{Name: "data-classification", ValueType: "single_select", Required: true},
-	}, nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append(base, d.props...), nil
 }
 
 func (d *DemoAPI) EnterpriseRulesets(ctx context.Context, slug string) ([]Ruleset, error) {
-	// No active rulesets -> POL-02 fails (and is remediable in the demo).
-	return []Ruleset{}, nil
+	// No active rulesets by default -> POL-02 fails (and is remediable in the
+	// demo); rulesets created via demo remediation appear here.
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]Ruleset{}, d.rulesets...), nil
 }
 
 func (d *DemoAPI) AuditLogStreamEnabled(ctx context.Context, slug string) (bool, Capability, error) {
@@ -112,4 +190,77 @@ func (d *DemoAPI) CostCenters(ctx context.Context, slug string) ([]CostCenter, C
 		{ID: "cc-1", Name: "Engineering"},
 		{ID: "cc-2", Name: "Data Platform"},
 	}, Capability{Determined: true}, nil
+}
+
+// --- WriteAPI: demo remediations mutate in-memory state --------------------
+
+func (d *DemoAPI) SetOrgDefaultRepositoryPermission(ctx context.Context, org, perm string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.basePerm[org] = perm
+	return nil
+}
+
+func (d *DemoAPI) SetOrgTwoFactorRequired(ctx context.Context, org string, required bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.twoFA[org] = required
+	return nil
+}
+
+func (d *DemoAPI) SetOrgSecretScanningDefaults(ctx context.Context, org string, enabled bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.secretScan[org] = enabled
+	return nil
+}
+
+func (d *DemoAPI) SetOrgDependabotDefaults(ctx context.Context, org string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.dependabot[org] = true
+	return nil
+}
+
+func (d *DemoAPI) SetOrgMembersCanCreatePublicRepos(ctx context.Context, org string, allowed bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.publicRepo[org] = allowed
+	return nil
+}
+
+func (d *DemoAPI) SetOrgWebCommitSignoff(ctx context.Context, org string, required bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.signoff[org] = required
+	return nil
+}
+
+func (d *DemoAPI) SetEnterpriseDefaultWorkflowPermissions(ctx context.Context, slug, perm string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.workflowPerm = perm
+	return nil
+}
+
+func (d *DemoAPI) CreateEnterpriseCustomProperty(ctx context.Context, slug, name, valueType string, required bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.props = append(d.props, CustomProperty{Name: name, ValueType: valueType, Required: required})
+	return nil
+}
+
+func (d *DemoAPI) CreateEnterpriseRuleset(ctx context.Context, slug string, payload any) error {
+	name := "demo-ruleset"
+	if m, ok := payload.(map[string]any); ok {
+		if n, ok := m["name"].(string); ok && n != "" {
+			name = n
+		}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.rulesets = append(d.rulesets, Ruleset{
+		ID: int64(9000 + len(d.rulesets)), Name: name, Target: "branch", Enforcement: "active",
+	})
+	return nil
 }

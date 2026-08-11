@@ -32,6 +32,11 @@ jobs:
           format: json
           output: scorecard.json
           comment-pr: 'true'
+          # Optional governance passthrough:
+          policy: .github/ghe-policy.yaml
+          profile: high-security
+          notify-webhook: ${{ secrets.GHE_SLACK_WEBHOOK }}
+          notify-only-alert: 'true'
       - if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -51,6 +56,10 @@ When published from this repository, replace `uses: ./action` with the released 
 | `format` | No | `json` | Report format written to `output`: `json`, `md`, or `html`. |
 | `output` | No | `scorecard.json` | Workspace-relative report path. |
 | `comment-pr` | No | `true` | Upsert a sticky pull request comment when the workflow event is `pull_request`. |
+| `policy` | No | `''` | Workspace-relative path to a config-as-code policy file (YAML): disabled rules, thresholds, waivers. |
+| `profile` | No | `''` | Rule profile to run (e.g. `baseline`, `high-security`, `security-only`). |
+| `notify-webhook` | No | `''` | Slack/Teams incoming-webhook URL for the scorecard. Store it as a secret; it reaches the container via environment only. |
+| `notify-only-alert` | No | `false` | Only notify on a score drop or new failure. |
 | `version` | No | `latest` | Tag for `ghcr.io/heisenberg-alt/ghe-wizard`. |
 
 ## Outputs

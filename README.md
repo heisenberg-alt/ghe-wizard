@@ -27,16 +27,16 @@ documentation.
 > enterprise so you can explore the scorecard and remediation flow instantly.
 
 
-## What it checks (28 rules, 9 domains)
+## What it checks (31 rules, 9 domains)
 
 | Domain | Examples |
 |---|---|
 | Enterprise foundations | limit enterprise owners, least-privilege custom roles |
-| Organizations | intentional org creation, stale-org cleanup, least-privilege base permission |
+| Organizations | intentional org creation, stale-org cleanup, least-privilege base permission, web commit sign-off |
 | Teams | manage access via teams, IdP sync, restrict membership control |
 | Repositories | org-owned collaboration, custom properties, repo-creation controls |
-| Policies | branch rulesets, IP allow list, Copilot policies, read-only workflow token |
-| Security | enterprise SSO, SCIM, 2FA, audit-log streaming, secret scanning |
+| Policies | branch rulesets, IP allow list, Copilot policies, read-only workflow token, allowed-actions policy |
+| Security | enterprise SSO, SCIM, 2FA, audit-log streaming, secret scanning, Dependabot alerts |
 | Innersource | internal-visibility repos for discovery & reuse |
 | Automation | GitHub Apps over PATs, automated provisioning |
 | Billing | cost centers, spending limits |
@@ -71,14 +71,50 @@ docker run --rm -e GHE_ENTERPRISE=octo-enterprise -e GHE_TOKEN=ghp_xxx \
 
 ## Authentication
 
-Set a Personal Access Token with enterprise admin scopes and your enterprise slug:
+**Personal Access Token** — set a PAT with enterprise admin scopes and your
+enterprise slug:
 
 ```bash
 export GHE_TOKEN=ghp_xxx          # or GITHUB_TOKEN
 export GHE_ENTERPRISE=octo-enterprise
 ```
 
-> A GitHub App token provider can be added later; the client is designed for it.
+**GitHub App (installation tokens)** — instead of a long-lived PAT, register a
+GitHub App, install it for your enterprise's organizations, and point
+ghe-wizard at the app credentials. Tokens are minted on demand (RS256 app JWT →
+installation token) and refreshed automatically before expiry:
+
+```bash
+export GHE_APP_ID=123456
+export GHE_APP_INSTALLATION_ID=7890123
+export GHE_APP_PRIVATE_KEY_PATH=/path/to/app.private-key.pem
+# or inline: export GHE_APP_PRIVATE_KEY="$(cat app.private-key.pem)"
+export GHE_ENTERPRISE=octo-enterprise
+```
+
+Grant the app the permissions matching the checks you run (organization
+administration/members read for org rules; write variants for remediation).
+An explicit `GHE_TOKEN` always wins over app auth when both are set.
+
+> Caveat: several enterprise-level endpoints (enterprise GraphQL owner data,
+> some `/enterprises/*` REST APIs) do not accept installation tokens; affected
+> rules degrade to error/manual. App auth is strongest for the organization
+> domain rules today — a PAT remains the full-coverage path.
+
+## GitHub Enterprise Server & data residency
+
+Point ghe-wizard at a GHES installation or a data-residency enterprise
+(`*.ghe.com`) with `--server` (or `GHE_SERVER`) — API endpoints are derived
+automatically, and explicit `GHE_BASE_URL`/`GHE_GRAPHQL_URL` still win:
+
+```bash
+ghe-wizard assess --server github.example.internal   # GHES
+ghe-wizard assess --server acme.ghe.com              # data residency
+```
+
+GHES installations are detected via `/meta`; rules that depend on cloud-only
+features (EMU detection, the audit-log streaming API, Copilot policies, cost
+centers) report **skipped** there and are excluded from the score.
 
 ## Usage
 
@@ -98,6 +134,10 @@ ghe-wizard apply --dry-run
 
 # Apply specific fixes
 ghe-wizard apply --rules ORG-04,SEC-03
+
+# Remediate under governance: honor policy waivers/disabled rules and record
+# the remediation log to history
+ghe-wizard apply --policy policy.example.yaml --db ghe-wizard.db
 
 # Web dashboard
 ghe-wizard serve --addr :8080
@@ -133,6 +173,7 @@ sparkline, and a dynamic **score badge** is served at `/badge.svg`.
 ```bash
 ghe-wizard assess --demo --db ghe-wizard.db     # record a run
 ghe-wizard history --enterprise acme-corp --db ghe-wizard.db
+ghe-wizard history --enterprise acme-corp --db ghe-wizard.db --remediations
 ghe-wizard serve --db ghe-wizard.db             # dashboard trends + /badge.svg
 ```
 
@@ -141,10 +182,13 @@ ghe-wizard serve --db ghe-wizard.db             # dashboard trends + /badge.svg
 Govern the assessment declaratively with a YAML policy — disable rules, override
 severities, tune thresholds, and record compliance **waivers** (accepted risks
 with an owner, reason and expiry). Waived findings are excluded from the score
-and from `--fail-on` gating until they expire. See [policy.example.yaml](policy.example.yaml).
+and from `--fail-on` gating until they expire, and `apply`/`wizard`/the
+dashboard skip them during remediation. See [policy.example.yaml](policy.example.yaml).
 
 ```bash
 ghe-wizard assess --policy policy.example.yaml
+ghe-wizard apply  --policy policy.example.yaml   # waived findings are not remediated
+ghe-wizard serve  --policy policy.example.yaml --profile high-security
 ```
 
 ### Rule profiles & evidence export
@@ -154,17 +198,24 @@ Run a curated subset of checks with a **profile**, or export auditor-friendly
 
 ```bash
 ghe-wizard assess --profile high-security      # only critical/high rules
+ghe-wizard assess --profile onboarding         # day-one onboarding checks
+ghe-wizard assess --profile compliance         # security + policies domains
 ghe-wizard assess --format csv --out evidence.csv
 ```
 
-### ChatOps notifications (Slack / Teams)
+### ChatOps notifications (Slack / Teams / Discord / JSON)
 
-Post the scorecard (and drift) to a Slack or Microsoft Teams incoming webhook.
-`--notify-only-alert` sends only on a score drop or a newly failing check:
+Post the scorecard (and drift) to a Slack, Microsoft Teams or Discord incoming
+webhook — auto-detected from the URL, or forced with `--notify-format`. The
+`json` format posts a stable versioned document (`ghe-wizard/v1`) for custom
+receivers. `--notify-only-alert` sends only on a score drop or a newly failing
+check:
 
 ```bash
 ghe-wizard assess --db ghe-wizard.db \
   --notify-webhook "$SLACK_WEBHOOK" --notify-only-alert
+
+ghe-wizard assess --notify-webhook "$AUTOMATION_URL" --notify-format json
 ```
 
 ### AI assistance (optional, pluggable)

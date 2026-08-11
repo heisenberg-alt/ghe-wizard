@@ -36,6 +36,12 @@ jobs:
           format: json
           output: scorecard.json
           comment-pr: 'true'
+          # Optional governance passthrough: config-as-code policy (disabled
+          # rules, thresholds, waivers), a rule profile, and ChatOps alerts.
+          # policy: .github/ghe-policy.yaml
+          # profile: high-security
+          # notify-webhook: ${{ secrets.GHE_SLACK_WEBHOOK }}
+          # notify-only-alert: 'true'
           version: latest
 
       - name: Upload scorecard artifact

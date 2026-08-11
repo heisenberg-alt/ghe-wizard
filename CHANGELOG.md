@@ -4,6 +4,77 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Live remediation previously never reached GitHub.** Every remediation
+  obtained its write client with a type assertion that always failed behind the
+  engine's caching layer, so `apply`, `wizard` and the dashboard's Apply flow
+  described changes without performing them (dry-run behavior was correct).
+  Remediations now reach the write client through an explicit write-API seam,
+  regression tests drive the full engine path, and a read-only client is now an
+  explicit error instead of a silent skip. **After upgrading, `apply` makes
+  real changes — review with `--dry-run` first.**
+- CLI `apply` and `wizard` now actually persist remediation results to the
+  history database via the new `--db` flag (previously only the dashboard
+  recorded them, despite the 1.2.0 changelog entry).
+
+### Added
+- **GitHub Enterprise Server & data residency:** `--server` (or `GHE_SERVER`)
+  targets a GHES hostname or a `*.ghe.com` data-residency enterprise; API
+  endpoints are derived automatically and explicit `GHE_BASE_URL`/
+  `GHE_GRAPHQL_URL` still win. GHES installations are detected via `/meta`,
+  and cloud-only rules (ENT-01 EMU, SEC-04 streaming API, POL-04 Copilot,
+  BILL-01 cost centers) report **skipped** there, excluded from the score.
+- **Notification backends:** Discord webhooks (auto-detected, 2000-char safe
+  truncation) and a stable versioned JSON document (`ghe-wizard/v1`) for
+  arbitrary receivers. `assess --notify-format auto|slack|teams|discord|json`;
+  matching `notify-format` input on the GitHub Action.
+- **New rule profiles:** `onboarding` (curated day-one checks from the
+  enterprise onboarding guide) and `compliance` (security + policies domains).
+  Profiles now support curated rule-ID sets in addition to domain/severity
+  filters.
+- **GitHub App authentication:** authenticate with a GitHub App installation
+  instead of a PAT (`GHE_APP_ID`, `GHE_APP_INSTALLATION_ID`,
+  `GHE_APP_PRIVATE_KEY[_PATH]`). The RS256 app JWT is hand-rolled with the
+  standard library (still zero dependencies), installation tokens are cached
+  and refreshed before expiry, and an explicit `GHE_TOKEN` always wins. Some
+  enterprise-level endpoints reject installation tokens; affected rules
+  degrade to error/manual (see README).
+- **Auto-remediation expanded from 5 to 9 of 31 rules.** Newly remediable:
+  POL-05 (enterprise default `GITHUB_TOKEN` permissions → read-only), REPO-03
+  (disable member creation of *public* repositories — general repo creation is
+  deliberately left untouched), and the new SEC-06 and ORG-05. SEC-05 now
+  checks and enables secret scanning *and* push protection for new repos.
+- **New rules:** SEC-06 (dependency graph + Dependabot alerts for new repos,
+  remediable), POL-06 (warn when any public action is allowed enterprise-wide),
+  ORG-05 (require web commit sign-off, remediable).
+- **SEC-04 audit-log streaming and POL-05 workflow permissions are now read
+  from the API** (`/enterprises/{e}/audit-log/streams`,
+  `/enterprises/{e}/actions/permissions/workflow`) instead of always reporting
+  manual — these can lower existing scores where misconfigured.
+- **Policy & profile parity for remediation:** `apply` and `wizard` accept
+  `--policy`, `--profile`, `--db` and `--demo`. Disabled rules never run,
+  waived findings are skipped (explicitly requested waived rules are skipped
+  with a warning), and thresholds apply consistently.
+- **Dashboard parity:** `serve --policy` / `serve --profile`; waived findings
+  get a status chip, stat tile and filter; `POST /api/export/csv` + a CSV
+  evidence button next to the JSON export; `/api/health` reports the active
+  policy and profile; the apply API skips waived/disabled rules and says so.
+- **Stateful demo:** demo-mode remediations now visibly improve subsequent
+  assessments within the same process, so the dashboard demo's apply →
+  re-assess loop shows a real score change.
+- **GitHub Action passthrough:** new optional inputs `policy`, `profile`,
+  `notify-webhook` (passed via environment, never argv) and
+  `notify-only-alert`.
+- `history --remediations` lists recorded remediation logs; `assess
+  --notify-webhook` falls back to the `GHE_NOTIFY_WEBHOOK` environment
+  variable.
+
+### Changed
+- `apply` and `wizard` respect policy waivers and disabled rules — previously
+  they would remediate findings your policy had accepted.
+
 ## [1.2.0] - 2026-08-06
 
 Continuous-governance release: living history, real-time UX, closed-loop

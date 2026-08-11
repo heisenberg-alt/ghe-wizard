@@ -45,7 +45,25 @@ func (c *Client) Enterprise(ctx context.Context, slug string) (*Enterprise, erro
 		}
 		ent.SAMLEnabled = q.Enterprise.OwnerInfo.SamlIdentityProvider != nil
 		ent.IPAllowListEnabled = q.Enterprise.OwnerInfo.IPAllowListEnabledSetting == "ENABLED"
-		ent.DefaultWorkflowPermissions = ""
+	}
+
+	// Enterprise Actions policies via REST (best-effort; recorded as
+	// capabilities when the endpoints are unavailable for the account).
+	var wf struct {
+		DefaultWorkflowPermissions string `json:"default_workflow_permissions"`
+	}
+	if _, err := c.rest(ctx, "GET", "/enterprises/"+slug+"/actions/permissions/workflow", nil, &wf); err != nil {
+		ent.Capabilities["workflowPermissions"] = Capability{false, "default workflow permissions unavailable: " + err.Error()}
+	} else {
+		ent.DefaultWorkflowPermissions = wf.DefaultWorkflowPermissions
+	}
+	var ap struct {
+		AllowedActions string `json:"allowed_actions"`
+	}
+	if _, err := c.rest(ctx, "GET", "/enterprises/"+slug+"/actions/permissions", nil, &ap); err != nil {
+		ent.Capabilities["allowedActions"] = Capability{false, "allowed-actions policy unavailable: " + err.Error()}
+	} else {
+		ent.AllowedActions = ap.AllowedActions
 	}
 
 	// EMU detection is best-effort: EMU logins carry an enterprise short-code suffix.
@@ -158,9 +176,14 @@ func (c *Client) OrgSettings(ctx context.Context, org string) (*OrgSettings, err
 		DefaultRepositoryPermission               string `json:"default_repository_permission"`
 		TwoFactorRequirementEnabled               bool   `json:"two_factor_requirement_enabled"`
 		MembersCanCreateRepositories              bool   `json:"members_can_create_repositories"`
+		MembersCanCreatePublicRepositories        bool   `json:"members_can_create_public_repositories"`
+		WebCommitSignoffRequired                  bool   `json:"web_commit_signoff_required"`
 		AdvancedSecurityEnabledForNewRepositories bool   `json:"advanced_security_enabled_for_new_repositories"`
 		SecretScanningEnabledForNewRepositories   bool   `json:"secret_scanning_enabled_for_new_repositories"`
 		SecretScanningPushProtectionEnabledForNew bool   `json:"secret_scanning_push_protection_enabled_for_new_repositories"`
+		DependencyGraphEnabledForNewRepositories  bool   `json:"dependency_graph_enabled_for_new_repositories"`
+		DependabotAlertsEnabledForNewRepositories bool   `json:"dependabot_alerts_enabled_for_new_repositories"`
+		DependabotSecurityUpdatesEnabledForNew    bool   `json:"dependabot_security_updates_enabled_for_new_repositories"`
 	}
 	if _, err := c.rest(ctx, "GET", "/orgs/"+org, nil, &raw); err != nil {
 		return nil, err
@@ -170,9 +193,14 @@ func (c *Client) OrgSettings(ctx context.Context, org string) (*OrgSettings, err
 		DefaultRepositoryPermission: raw.DefaultRepositoryPermission,
 		TwoFactorRequired:           raw.TwoFactorRequirementEnabled,
 		MembersCanCreateRepos:       raw.MembersCanCreateRepositories,
+		MembersCanCreatePublicRepos: raw.MembersCanCreatePublicRepositories,
+		WebCommitSignoffRequired:    raw.WebCommitSignoffRequired,
 		AdvancedSecurityEnabled:     raw.AdvancedSecurityEnabledForNewRepositories,
 		SecretScanningEnabled:       raw.SecretScanningEnabledForNewRepositories,
 		SecretScanningPushProtect:   raw.SecretScanningPushProtectionEnabledForNew,
+		DependencyGraphEnabled:      raw.DependencyGraphEnabledForNewRepositories,
+		DependabotAlertsEnabled:     raw.DependabotAlertsEnabledForNewRepositories,
+		DependabotSecurityUpdates:   raw.DependabotSecurityUpdatesEnabledForNew,
 	}, nil
 }
 
@@ -247,11 +275,32 @@ func (c *Client) EnterpriseRulesets(ctx context.Context, slug string) ([]Ruleset
 	return rs, nil
 }
 
-// AuditLogStreamEnabled reports whether audit log streaming is configured.
-// The stream configuration is not broadly exposed via REST, so this returns a
-// Capability marking the result as undetermined for manual verification.
+// AuditLogStreamEnabled reports whether at least one audit-log stream is
+// configured for the enterprise. When the endpoint is unavailable for the
+// account (e.g. missing permission or plan), the result is undetermined and
+// left for manual verification.
 func (c *Client) AuditLogStreamEnabled(ctx context.Context, slug string) (bool, Capability, error) {
-	return false, Capability{Determined: false, Reason: "audit log stream config not exposed via API; verify in Settings > Audit log > Log streaming"}, nil
+	var streams []struct {
+		ID int64 `json:"id"`
+	}
+	status, err := c.rest(ctx, "GET", "/enterprises/"+slug+"/audit-log/streams", nil, &streams)
+	if err != nil {
+		return false, Capability{Determined: false,
+			Reason: fmt.Sprintf("audit log stream config unavailable (status %d); verify in Settings > Audit log > Log streaming", status)}, nil
+	}
+	return len(streams) > 0, Capability{Determined: true}, nil
+}
+
+// ServerMeta reports the target server type via GET /meta: GitHub Enterprise
+// Server responses carry an installed_version field, cloud responses do not.
+func (c *Client) ServerMeta(ctx context.Context) (installedVersion string, isGHES bool, err error) {
+	var raw struct {
+		InstalledVersion string `json:"installed_version"`
+	}
+	if _, err := c.rest(ctx, "GET", "/meta", nil, &raw); err != nil {
+		return "", false, err
+	}
+	return raw.InstalledVersion, raw.InstalledVersion != "", nil
 }
 
 // EnterpriseInstallations lists GitHub Apps installed on the enterprise account.

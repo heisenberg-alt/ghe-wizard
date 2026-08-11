@@ -94,6 +94,50 @@ func TestDrift_NoPrevious(t *testing.T) {
 	}
 }
 
+func TestSaveAndReadRemediations(t *testing.T) {
+	st, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+
+	results := []rules.RemediationResult{
+		{RuleID: "SEC-03", Applied: true, Changes: []string{"require 2FA for org a"}},
+		{RuleID: "POL-02", DryRun: true, Changes: []string{"create ruleset"}, Errors: []string{"boom"}},
+	}
+	if err := st.SaveRemediations(ctx, "acme", results); err != nil {
+		t.Fatal(err)
+	}
+	logs, err := st.Remediations(ctx, "acme", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("expected 2 remediation logs, got %d", len(logs))
+	}
+	byRule := map[string]RemediationSummary{}
+	for _, l := range logs {
+		byRule[l.RuleID] = l
+	}
+	sec := byRule["SEC-03"]
+	if !sec.Applied || sec.DryRun || len(sec.Changes) != 1 || sec.Changes[0] != "require 2FA for org a" {
+		t.Fatalf("SEC-03 round-trip mismatch: %+v", sec)
+	}
+	pol := byRule["POL-02"]
+	if pol.Applied || !pol.DryRun || len(pol.Errors) != 1 || pol.Errors[0] != "boom" {
+		t.Fatalf("POL-02 round-trip mismatch: %+v", pol)
+	}
+	// Scoped by enterprise.
+	other, err := st.Remediations(ctx, "other", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(other) != 0 {
+		t.Fatalf("expected no logs for other enterprise, got %d", len(other))
+	}
+}
+
 func contains(s []string, v string) bool {
 	for _, x := range s {
 		if x == v {

@@ -21,6 +21,8 @@ import (
 	"github.com/ghe-wizard/ghe-wizard/internal/config"
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/ghclient"
+	"github.com/ghe-wizard/ghe-wizard/internal/policy"
+	"github.com/ghe-wizard/ghe-wizard/internal/profile"
 	"github.com/ghe-wizard/ghe-wizard/internal/report"
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
 	_ "github.com/ghe-wizard/ghe-wizard/internal/rules/catalog" // register rules
@@ -37,6 +39,8 @@ type Options struct {
 	BasicPass    string
 	Demo         bool   // serve synthetic data without requiring a token
 	DBPath       string // optional: record runs and enable history/trends
+	PolicyPath   string // optional: config-as-code policy (disabled rules, waivers)
+	ProfileName  string // optional: rule profile to run (e.g. high-security)
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 }
@@ -44,6 +48,43 @@ type Options struct {
 // Serve starts the dashboard HTTP server on addr with sensible defaults.
 func Serve(addr string, base *config.Config) error {
 	return ServeWithOptions(Options{Addr: addr}, base)
+}
+
+// newServer builds the dashboard server, loading the policy and profile up
+// front so bad configuration fails at startup rather than per-request. The
+// demo API is shared across requests so demo remediations visibly improve
+// subsequent assessments.
+func newServer(base *config.Config, opts Options) (*server, error) {
+	s := &server{base: base, opts: opts, demoAPI: ghclient.NewDemoAPI()}
+	pol, err := policy.Load(opts.PolicyPath)
+	if err != nil {
+		return nil, err
+	}
+	s.pol = pol
+	if opts.ProfileName != "" {
+		p, ok := profile.Get(opts.ProfileName)
+		if !ok {
+			return nil, fmt.Errorf("unknown profile %q (available: %s)", opts.ProfileName, strings.Join(profile.Names(), ", "))
+		}
+		s.prof = p
+	}
+	return s, nil
+}
+
+// handler builds the full route + middleware stack (also exercised by tests).
+func (s *server) handler() http.Handler {
+	mux := http.NewServeMux()
+	sub, _ := fsSub()
+	mux.Handle("/", cacheStatic(http.FileServer(http.FS(sub))))
+	mux.HandleFunc("/api/rules", s.handleRules)
+	mux.HandleFunc("/api/assess", s.handleAssess)
+	mux.HandleFunc("/api/assess/stream", s.handleAssessStream)
+	mux.HandleFunc("/api/apply", s.handleApply)
+	mux.HandleFunc("/api/export/csv", s.handleExportCSV)
+	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/badge.svg", s.handleBadge)
+	return securityHeaders(s.auth(mux))
 }
 
 // ServeWithOptions starts the dashboard with graceful shutdown, security
@@ -55,7 +96,10 @@ func ServeWithOptions(opts Options, base *config.Config) error {
 	if opts.WriteTimeout == 0 {
 		opts.WriteTimeout = 3 * time.Minute
 	}
-	s := &server{base: base, opts: opts}
+	s, err := newServer(base, opts)
+	if err != nil {
+		return err
+	}
 	if opts.DBPath != "" {
 		st, err := store.Open(opts.DBPath)
 		if err != nil {
@@ -64,22 +108,10 @@ func ServeWithOptions(opts Options, base *config.Config) error {
 		defer func() { _ = st.Close() }()
 		s.store = st
 	}
-	mux := http.NewServeMux()
 
-	sub, _ := fsSub()
-	mux.Handle("/", cacheStatic(http.FileServer(http.FS(sub))))
-	mux.HandleFunc("/api/rules", s.handleRules)
-	mux.HandleFunc("/api/assess", s.handleAssess)
-	mux.HandleFunc("/api/assess/stream", s.handleAssessStream)
-	mux.HandleFunc("/api/apply", s.handleApply)
-	mux.HandleFunc("/api/health", s.handleHealth)
-	mux.HandleFunc("/api/history", s.handleHistory)
-	mux.HandleFunc("/badge.svg", s.handleBadge)
-
-	handler := securityHeaders(s.auth(mux))
 	srv := &http.Server{
 		Addr:              opts.Addr,
-		Handler:           handler,
+		Handler:           s.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       opts.ReadTimeout,
 		WriteTimeout:      opts.WriteTimeout,
@@ -106,9 +138,12 @@ func ServeWithOptions(opts Options, base *config.Config) error {
 }
 
 type server struct {
-	base  *config.Config
-	opts  Options
-	store *store.Store
+	base    *config.Config
+	opts    Options
+	store   *store.Store
+	pol     *policy.Policy
+	prof    *profile.Profile
+	demoAPI *ghclient.DemoAPI
 }
 
 // request-scoped overrides supplied by the UI form.
@@ -127,23 +162,47 @@ func (s *server) cfgFor(b reqBody) *config.Config {
 	if b.Token != "" {
 		c.Token = b.Token
 	}
+	// Config-as-code thresholds apply to every request-scoped config.
+	s.pol.ApplyThresholds(&c.Thresholds.MaxEnterpriseOwners, &c.Thresholds.StaleOrgDays)
 	return &c
 }
 
 func (s *server) engineFor(b reqBody) (*engine.Engine, error) {
 	c := s.cfgFor(b)
 	// Demo mode: run the real engine against synthetic data, no token required.
+	// The demo API instance is shared across requests so demo remediations
+	// visibly change subsequent assessments.
 	if s.opts.Demo || strings.EqualFold(c.Enterprise, "demo") || strings.EqualFold(c.Token, "demo") {
 		if c.Enterprise == "" {
 			c.Enterprise = "acme-corp"
 		}
-		return engine.New(ghclient.NewDemoAPI(), c), nil
+		return engine.New(s.demoAPI, c), nil
 	}
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	api := ghclient.New(c.Token, c.BaseURL, c.GraphQLURL)
+	api, err := ghclient.NewFromConfig(c)
+	if err != nil {
+		return nil, err
+	}
 	return engine.New(api, c), nil
+}
+
+// rulesToRun applies the server's policy (disabled rules) and profile filters.
+func (s *server) rulesToRun() []rules.Rule {
+	toRun := s.pol.FilterRules(rules.All())
+	if s.prof != nil {
+		toRun = s.prof.Filter(toRun)
+	}
+	return toRun
+}
+
+// runAssessment assesses the filtered rule set and applies policy waivers and
+// severity overrides, mirroring the CLI pipeline.
+func (s *server) runAssessment(ctx context.Context, eng *engine.Engine) *engine.Scorecard {
+	sc := eng.Assess(ctx, s.rulesToRun())
+	s.pol.Apply(sc)
+	return sc
 }
 
 func (s *server) handleRules(w http.ResponseWriter, r *http.Request) {
@@ -168,6 +227,8 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"has_server_token":   s.base.Token != "",
 		"demo":               s.opts.Demo,
 		"history":            s.store != nil,
+		"policy":             s.opts.PolicyPath,
+		"profile":            s.opts.ProfileName,
 	})
 }
 
@@ -181,7 +242,7 @@ func (s *server) handleAssess(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	sc := eng.Assess(ctx, nil)
+	sc := s.runAssessment(ctx, eng)
 	// Record history when a store is configured (best-effort, non-fatal).
 	if s.store != nil {
 		_, _ = s.store.SaveRun(ctx, sc)
@@ -206,7 +267,7 @@ func (s *server) handleAssessStream(w http.ResponseWriter, r *http.Request) {
 		// Streaming unsupported: fall back to a single JSON response.
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 		defer cancel()
-		sc := eng.Assess(ctx, nil)
+		sc := s.runAssessment(ctx, eng)
 		if s.store != nil {
 			_, _ = s.store.SaveRun(ctx, sc)
 		}
@@ -230,9 +291,12 @@ func (s *server) handleAssessStream(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
 
-	sc := eng.AssessStream(ctx, nil, func(total, index int, res rules.Result) {
+	// Streamed per-rule events are pre-waiver; the final "done" scorecard
+	// carries waived statuses and is the UI's source of truth.
+	sc := eng.AssessStream(ctx, s.rulesToRun(), func(total, index int, res rules.Result) {
 		send("result", map[string]any{"total": total, "index": index, "result": res})
 	})
+	s.pol.Apply(sc)
 	if s.store != nil {
 		_, _ = s.store.SaveRun(ctx, sc)
 	}
@@ -297,26 +361,75 @@ func (s *server) handleApply(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
 
+	// Assess first so remediation honors the policy: disabled rules never ran
+	// and waived findings are excluded (or skipped with a note when explicit).
+	sc := s.runAssessment(ctx, eng)
 	var targets []rules.Rule
+	var results []rules.RemediationResult
 	if len(b.Rules) > 0 {
+		statusByID := map[string]rules.Status{}
+		for _, res := range sc.Results {
+			statusByID[res.Meta.ID] = res.Status
+		}
 		for _, id := range b.Rules {
-			if rl := rules.ByID(id); rl != nil {
+			rl := rules.ByID(id)
+			if rl == nil {
+				results = append(results, rules.RemediationResult{RuleID: id, DryRun: b.DryRun,
+					Errors: []string{"unknown rule"}})
+				continue
+			}
+			st, ran := statusByID[id]
+			switch {
+			case !ran:
+				results = append(results, rules.RemediationResult{RuleID: id, DryRun: b.DryRun,
+					Errors: []string{"skipped: disabled by policy or excluded by profile"}})
+			case st == rules.StatusWaived:
+				results = append(results, rules.RemediationResult{RuleID: id, DryRun: b.DryRun,
+					Errors: []string{"skipped: waived by policy"}})
+			default:
 				targets = append(targets, rl)
 			}
 		}
 	} else {
-		for _, rl := range eng.FailingRules(ctx, nil) {
-			if rl.Meta().Remediable {
-				targets = append(targets, rl)
-			}
-		}
+		targets = engine.RemediableFailures(sc)
 	}
-	results := eng.Remediate(ctx, targets, b.DryRun)
+	results = append(results, eng.Remediate(ctx, targets, b.DryRun)...)
 	// Record applied (non-dry-run) remediations to history when available.
 	if s.store != nil && !b.DryRun {
 		_ = s.store.SaveRemediations(ctx, s.enterpriseFor(b), results)
 	}
 	writeJSON(w, http.StatusOK, results)
+}
+
+// handleExportCSV renders a scorecard the client already holds as a CSV
+// evidence download. No re-assessment happens here; report.EvidenceCSV is the
+// single source of truth for the CSV format.
+func (s *server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
+	var sc engine.Scorecard
+	if err := json.NewDecoder(r.Body).Decode(&sc); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid scorecard payload: " + err.Error()})
+		return
+	}
+	name := sanitizeFilename(sc.Enterprise)
+	if name == "" {
+		name = "scorecard"
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", "ghe-evidence-"+name+".csv"))
+	_, _ = w.Write([]byte(report.EvidenceCSV(&sc)))
+}
+
+// sanitizeFilename keeps a user-supplied name safe for a Content-Disposition
+// filename: alphanumerics, dash, underscore and dot only.
+func sanitizeFilename(name string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			return r
+		default:
+			return '-'
+		}
+	}, name)
 }
 
 // enterpriseFor resolves the enterprise slug for a request (body override,

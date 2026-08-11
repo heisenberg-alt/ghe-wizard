@@ -134,6 +134,27 @@ func (e *Engine) FailingRules(ctx context.Context, rs []rules.Rule) []rules.Rule
 	return failing
 }
 
+// RemediableFailures returns the registered rules whose result in sc is fail
+// or warn and remediable. Rules disabled by policy never appear in sc, and
+// waived findings carry StatusWaived, so both are naturally excluded — this
+// lets apply-style commands reuse an existing scorecard instead of
+// re-assessing, while honoring policy.
+func RemediableFailures(sc *Scorecard) []rules.Rule {
+	var out []rules.Rule
+	for _, res := range sc.Results {
+		if res.Status != rules.StatusFail && res.Status != rules.StatusWarn {
+			continue
+		}
+		if !res.Meta.Remediable {
+			continue
+		}
+		if r := rules.ByID(res.Meta.ID); r != nil {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // Recompute regenerates the summary after the results slice has been modified
 // (for example after applying policy waivers or severity overrides).
 func Recompute(sc *Scorecard) { sc.Summary = summarize(sc.Results) }

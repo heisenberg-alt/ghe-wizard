@@ -1,6 +1,7 @@
 // Package ghclient is a small GitHub API client (REST + GraphQL) for the
-// enterprise best-practices wizard. It authenticates with a PAT and exposes
-// both low-level helpers and the higher-level GHAPI interface consumed by rules.
+// enterprise best-practices wizard. It authenticates with a PAT or GitHub App
+// installation tokens and exposes both low-level helpers and the higher-level
+// GHAPI interface consumed by rules.
 package ghclient
 
 import (
@@ -13,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ghe-wizard/ghe-wizard/internal/config"
 )
 
 // GHAPI is the surface consumed by rules. A mock implementation is used in tests.
@@ -47,6 +50,9 @@ type Enterprise struct {
 	EMU bool
 	// DefaultWorkflowPermissions is "read" or "write" when known.
 	DefaultWorkflowPermissions string
+	// AllowedActions is the enterprise Actions policy ("all", "local_only",
+	// "selected") when known.
+	AllowedActions string
 	// IPAllowListEnabled reflects the enterprise IP allow list policy.
 	IPAllowListEnabled bool
 	Capabilities       map[string]Capability
@@ -70,9 +76,15 @@ type OrgSettings struct {
 	DefaultRepositoryPermission string // none|read|write|admin
 	TwoFactorRequired           bool
 	MembersCanCreateRepos       bool
+	MembersCanCreatePublicRepos bool
+	WebCommitSignoffRequired    bool
 	AdvancedSecurityEnabled     bool
 	SecretScanningEnabled       bool
 	SecretScanningPushProtect   bool
+	// Dependabot/dependency-graph defaults for new repositories.
+	DependencyGraphEnabled    bool
+	DependabotAlertsEnabled   bool
+	DependabotSecurityUpdates bool
 }
 
 type Repository struct {
@@ -112,16 +124,23 @@ type CostCenter struct {
 
 // --- Client ---------------------------------------------------------------
 
-// Client is a PAT-authenticated GitHub API client.
+// Client is an authenticated GitHub API client. Authentication is pluggable
+// via TokenProvider: a static PAT or GitHub App installation tokens.
 type Client struct {
 	http       *http.Client
 	baseURL    string
 	graphqlURL string
-	token      string
+	auth       TokenProvider
 }
 
-// New returns a Client. baseURL/graphqlURL default to public GitHub if empty.
+// New returns a PAT-authenticated Client. baseURL/graphqlURL default to
+// public GitHub if empty.
 func New(token, baseURL, graphqlURL string) *Client {
+	return NewWithAuth(StaticToken(token), baseURL, graphqlURL)
+}
+
+// NewWithAuth returns a Client using the given token provider.
+func NewWithAuth(auth TokenProvider, baseURL, graphqlURL string) *Client {
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
 	}
@@ -132,8 +151,36 @@ func New(token, baseURL, graphqlURL string) *Client {
 		http:       &http.Client{Timeout: 30 * time.Second},
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		graphqlURL: graphqlURL,
-		token:      token,
+		auth:       auth,
 	}
+}
+
+// NewFromConfig builds a client from configuration. An explicit token wins
+// (preserving the dashboard's per-request token override); otherwise GitHub
+// App installation-token auth is used when configured.
+func NewFromConfig(cfg *config.Config) (*Client, error) {
+	if cfg.Token != "" || !cfg.HasAppAuth() {
+		return New(cfg.Token, cfg.BaseURL, cfg.GraphQLURL), nil
+	}
+	pemKey, err := cfg.AppPrivateKeyPEM()
+	if err != nil {
+		return nil, err
+	}
+	auth, err := NewAppAuth(cfg.AppID, cfg.AppInstallationID, pemKey, cfg.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	return NewWithAuth(auth, cfg.BaseURL, cfg.GraphQLURL), nil
+}
+
+// bearer returns the Authorization header value for a request, fetching (or
+// refreshing) the token from the provider.
+func (c *Client) bearer(ctx context.Context) (string, error) {
+	tok, err := c.auth.Token(ctx)
+	if err != nil {
+		return "", fmt.Errorf("obtain API token: %w", err)
+	}
+	return "Bearer " + tok, nil
 }
 
 // rest performs a REST request and decodes the JSON body into out (if non-nil).
@@ -155,7 +202,11 @@ func (c *Client) rest(ctx context.Context, method, path string, body, out any) (
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	bearer, err := c.bearer(ctx)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", bearer)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	if body != nil {
@@ -231,7 +282,11 @@ func (c *Client) restPaginated(ctx context.Context, path string, accumulate func
 		if err != nil {
 			return err
 		}
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		bearer, err := c.bearer(ctx)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", bearer)
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 		resp, err := c.doWithRetry(req)
@@ -273,7 +328,11 @@ func (c *Client) graphql(ctx context.Context, query string, vars map[string]any,
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	bearer, err := c.bearer(ctx)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", bearer)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.doWithRetry(req)
 	if err != nil {

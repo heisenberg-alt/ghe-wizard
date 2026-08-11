@@ -269,6 +269,49 @@ func (s *Store) SaveRemediations(ctx context.Context, enterprise string, results
 	return tx.Commit()
 }
 
+// RemediationSummary is a stored remediation log row.
+type RemediationSummary struct {
+	ID         int64     `json:"id"`
+	CreatedAt  time.Time `json:"created_at"`
+	Enterprise string    `json:"enterprise"`
+	RuleID     string    `json:"rule_id"`
+	Applied    bool      `json:"applied"`
+	DryRun     bool      `json:"dry_run"`
+	Changes    []string  `json:"changes"`
+	Errors     []string  `json:"errors,omitempty"`
+}
+
+// Remediations returns up to limit most-recent remediation log entries for an
+// enterprise (newest first).
+func (s *Store) Remediations(ctx context.Context, enterprise string, limit int) ([]RemediationSummary, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id,created_at,enterprise,rule_id,applied,dry_run,changes,errors
+		   FROM remediation_logs WHERE enterprise=? ORDER BY id DESC LIMIT ?`,
+		enterprise, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RemediationSummary
+	for rows.Next() {
+		var r RemediationSummary
+		var ts, changes, errs string
+		var applied, dry int
+		if err := rows.Scan(&r.ID, &ts, &r.Enterprise, &r.RuleID, &applied, &dry, &changes, &errs); err != nil {
+			return nil, err
+		}
+		r.CreatedAt, _ = time.Parse(time.RFC3339, ts)
+		r.Applied, r.DryRun = applied != 0, dry != 0
+		_ = json.Unmarshal([]byte(changes), &r.Changes)
+		_ = json.Unmarshal([]byte(errs), &r.Errors)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func b2i(b bool) int {
 	if b {
 		return 1

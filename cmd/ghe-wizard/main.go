@@ -3,9 +3,9 @@
 //
 // Usage:
 //
-//	ghe-wizard assess   [--enterprise SLUG] [--format md|json] [--out FILE]
-//	ghe-wizard wizard   [--enterprise SLUG] [--yes]
-//	ghe-wizard apply    [--enterprise SLUG] [--rules ID,ID] [--dry-run] [--yes]
+//	ghe-wizard assess   [--enterprise SLUG] [--policy FILE] [--profile NAME] [--db FILE] [--format md|json|html|csv] [--out FILE]
+//	ghe-wizard wizard   [--enterprise SLUG] [--policy FILE] [--profile NAME] [--db FILE] [--yes]
+//	ghe-wizard apply    [--enterprise SLUG] [--policy FILE] [--profile NAME] [--db FILE] [--rules ID,ID] [--dry-run] [--yes]
 //	ghe-wizard report   [--enterprise SLUG] [--format md|json] [--out FILE]
 //	ghe-wizard serve    [--addr :8080]
 //	ghe-wizard list
@@ -29,7 +29,6 @@ import (
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/ghclient"
 	"github.com/ghe-wizard/ghe-wizard/internal/notify"
-	"github.com/ghe-wizard/ghe-wizard/internal/policy"
 	"github.com/ghe-wizard/ghe-wizard/internal/profile"
 	"github.com/ghe-wizard/ghe-wizard/internal/report"
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
@@ -106,15 +105,22 @@ Run "ghe-wizard <command> -h" for command flags.
 }
 
 // buildEngine wires config, client and engine, validating required inputs.
-// When preflight is true, it verifies the token and warns about missing scopes.
-// When demo is true, a synthetic data source is used and no token is required.
-func buildEngine(enterprise, cfgPath string, preflight, demo bool) (*engine.Engine, *config.Config, error) {
+// When preflight is true, it verifies the credentials and warns about missing
+// scopes. When demo is true, a synthetic data source is used and no token is
+// required. A non-empty server selects GHES or a data-residency host.
+func buildEngine(enterprise, server, cfgPath string, preflight, demo bool) (*engine.Engine, *config.Config, error) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, nil, err
 	}
 	if enterprise != "" {
 		cfg.Enterprise = enterprise
+	}
+	if server != "" {
+		cfg.Server = server
+	}
+	if err := cfg.DeriveEndpoints(); err != nil {
+		return nil, nil, err
 	}
 	if demo {
 		if cfg.Enterprise == "" {
@@ -125,17 +131,37 @@ func buildEngine(enterprise, cfgPath string, preflight, demo bool) (*engine.Engi
 	if err := cfg.Validate(); err != nil {
 		return nil, nil, err
 	}
-	client := ghclient.New(cfg.Token, cfg.BaseURL, cfg.GraphQLURL)
+	client, err := ghclient.NewFromConfig(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Detect GitHub Enterprise Server (best-effort) so cloud-only rules skip.
+	if cfg.BaseURL != "" && cfg.BaseURL != config.DefaultBaseURL {
+		if v, isGHES, merr := client.ServerMeta(context.Background()); merr == nil && isGHES {
+			cfg.TargetGHES = true
+			cfg.ServerVersion = v
+			fmt.Fprintf(os.Stderr, "Target: GitHub Enterprise Server %s (cloud-only rules will be skipped)\n", v)
+		}
+	}
 	if preflight {
-		login, _, missing, perr := client.Preflight(context.Background())
-		if perr != nil {
-			return nil, nil, fmt.Errorf("token preflight failed: %w", perr)
-		}
-		if login != "" {
-			fmt.Fprintf(os.Stderr, "Authenticated as %s\n", login)
-		}
-		if len(missing) > 0 {
-			fmt.Fprintf(os.Stderr, "warning: token may be missing scopes: %s\n", strings.Join(missing, ", "))
+		if cfg.Token == "" && cfg.HasAppAuth() {
+			// Installation tokens are not users and carry no OAuth scopes; a
+			// one-shot mint verifies the app credentials instead of /user.
+			if err := client.PreflightAppAuth(context.Background()); err != nil {
+				return nil, nil, fmt.Errorf("github app preflight failed: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "Authenticated as GitHub App installation %d\n", cfg.AppInstallationID)
+		} else {
+			login, _, missing, perr := client.Preflight(context.Background())
+			if perr != nil {
+				return nil, nil, fmt.Errorf("token preflight failed: %w", perr)
+			}
+			if login != "" {
+				fmt.Fprintf(os.Stderr, "Authenticated as %s\n", login)
+			}
+			if len(missing) > 0 {
+				fmt.Fprintf(os.Stderr, "warning: token may be missing scopes: %s\n", strings.Join(missing, ", "))
+			}
 		}
 	}
 	return engine.New(client, cfg), cfg, nil
@@ -143,59 +169,28 @@ func buildEngine(enterprise, cfgPath string, preflight, demo bool) (*engine.Engi
 
 func cmdAssess(args []string) error {
 	fs := flag.NewFlagSet("assess", flag.ExitOnError)
-	enterprise := fs.String("enterprise", "", "enterprise slug")
-	cfgPath := fs.String("config", "", "config file")
-	policyPath := fs.String("policy", "", "config-as-code policy file (YAML): disabled rules, thresholds, waivers")
-	profileName := fs.String("profile", "", "rule profile to run: "+strings.Join(profile.Names(), "|"))
-	dbPath := fs.String("db", "", "record this run to a SQLite history database at this path")
+	o := registerCommonFlags(fs)
 	format := fs.String("format", "md", "output format: md|json|html|csv")
 	out := fs.String("out", "", "write output to file instead of stdout")
 	failOn := fs.String("fail-on", "", "exit non-zero if any finding has this status or worse: fail|warn")
-	notifyURL := fs.String("notify-webhook", "", "Slack/Teams incoming-webhook URL to post the scorecard to")
+	notifyURL := fs.String("notify-webhook", os.Getenv("GHE_NOTIFY_WEBHOOK"),
+		"Slack/Teams/Discord/JSON webhook URL to post the scorecard to (or env GHE_NOTIFY_WEBHOOK)")
+	notifyFormat := fs.String("notify-format", "auto", "webhook payload format: auto|slack|teams|discord|json")
 	notifyOnlyAlert := fs.Bool("notify-only-alert", false, "only send a notification on a score drop or new failure")
-	noPreflight := fs.Bool("no-preflight", false, "skip token scope preflight check")
-	demo := fs.Bool("demo", false, "assess synthetic demo data (no token required)")
 	_ = fs.Parse(args)
 
-	eng, cfg, err := buildEngine(*enterprise, *cfgPath, !*noPreflight && !*demo, *demo)
+	a, err := buildAssessment(o)
 	if err != nil {
 		return err
-	}
-
-	// Config-as-code: load policy, apply thresholds, filter disabled rules.
-	pol, err := policy.Load(*policyPath)
-	if err != nil {
-		return err
-	}
-	pol.ApplyThresholds(&cfg.Thresholds.MaxEnterpriseOwners, &cfg.Thresholds.StaleOrgDays)
-	known := map[string]bool{}
-	for _, r := range rules.All() {
-		known[r.Meta().ID] = true
-	}
-	for _, w := range pol.Validate(known) {
-		fmt.Fprintln(os.Stderr, "policy warning:", w)
-	}
-	toRun := pol.FilterRules(rules.All())
-
-	// Optional rule profile (e.g. high-security).
-	if *profileName != "" {
-		p, ok := profile.Get(*profileName)
-		if !ok {
-			return fmt.Errorf("unknown profile %q (available: %s)", *profileName, strings.Join(profile.Names(), ", "))
-		}
-		toRun = p.Filter(toRun)
 	}
 
 	ctx := context.Background()
-	sc := eng.Assess(ctx, toRun)
-	if waived := pol.Apply(sc); waived > 0 {
-		fmt.Fprintf(os.Stderr, "applied %d waiver(s) from policy\n", waived)
-	}
+	sc := a.assessWithPolicy(ctx)
 
 	// Persist run + compute drift against the previous run.
 	var drift *store.Drift
-	if *dbPath != "" {
-		drift, err = recordRun(ctx, *dbPath, sc)
+	if *o.dbPath != "" {
+		drift, err = recordRun(ctx, *o.dbPath, sc)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "warning: could not record run:", err)
 		}
@@ -212,7 +207,7 @@ func cmdAssess(args []string) error {
 			}
 		}
 		if send {
-			if nerr := notify.Send(ctx, *notifyURL, sc, drift); nerr != nil {
+			if nerr := notify.SendFormat(ctx, *notifyFormat, *notifyURL, sc, drift); nerr != nil {
 				fmt.Fprintln(os.Stderr, "warning: notification failed:", nerr)
 			}
 		}
@@ -255,34 +250,45 @@ func cmdAssess(args []string) error {
 
 func cmdApply(args []string) error {
 	fs := flag.NewFlagSet("apply", flag.ExitOnError)
-	enterprise := fs.String("enterprise", "", "enterprise slug")
-	cfgPath := fs.String("config", "", "config file")
+	o := registerCommonFlags(fs)
 	ruleList := fs.String("rules", "", "comma-separated rule IDs (default: all failing remediable rules)")
 	dryRun := fs.Bool("dry-run", false, "describe changes without applying")
 	yes := fs.Bool("yes", false, "skip confirmation prompt")
 	_ = fs.Parse(args)
 
-	eng, cfg, err := buildEngine(*enterprise, *cfgPath, !*dryRun, false)
+	a, err := buildAssessment(o)
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
+	sc := a.assessWithPolicy(ctx)
 
 	var targets []rules.Rule
 	if *ruleList != "" {
+		// Explicit IDs: honor policy — skip rules that were disabled, filtered
+		// out by the profile, or waived, with a warning.
+		statusByID := map[string]rules.Status{}
+		for _, res := range sc.Results {
+			statusByID[res.Meta.ID] = res.Status
+		}
 		for _, id := range strings.Split(*ruleList, ",") {
-			if r := rules.ByID(strings.TrimSpace(id)); r != nil {
-				targets = append(targets, r)
-			} else {
+			id = strings.TrimSpace(id)
+			r := rules.ByID(id)
+			if r == nil {
 				return fmt.Errorf("unknown rule %q", id)
+			}
+			st, ran := statusByID[id]
+			switch {
+			case !ran:
+				fmt.Fprintf(os.Stderr, "warning: skipping %s: disabled by policy or excluded by profile\n", id)
+			case st == rules.StatusWaived:
+				fmt.Fprintf(os.Stderr, "warning: skipping %s: waived by policy\n", id)
+			default:
+				targets = append(targets, r)
 			}
 		}
 	} else {
-		for _, r := range eng.FailingRules(ctx, nil) {
-			if r.Meta().Remediable {
-				targets = append(targets, r)
-			}
-		}
+		targets = engine.RemediableFailures(sc)
 	}
 	if len(targets) == 0 {
 		fmt.Println("nothing to remediate — no failing remediable rules.")
@@ -294,33 +300,33 @@ func cmdApply(args []string) error {
 		fmt.Printf("  - %s %s\n", r.Meta().ID, r.Meta().Title)
 	}
 	if !*dryRun && !*yes {
-		if !confirm(fmt.Sprintf("Apply changes to enterprise %q?", cfg.Enterprise)) {
+		if !confirm(fmt.Sprintf("Apply changes to enterprise %q?", a.cfg.Enterprise)) {
 			fmt.Println("aborted.")
 			return nil
 		}
 	}
-	results := eng.Remediate(ctx, targets, *dryRun)
+	results := a.eng.Remediate(ctx, targets, *dryRun)
 	fmt.Println(report.RemediationLog(results))
+	recordRemediations(ctx, *o.dbPath, a.cfg.Enterprise, results)
 	return nil
 }
 
 func cmdWizard(args []string) error {
 	fs := flag.NewFlagSet("wizard", flag.ExitOnError)
-	enterprise := fs.String("enterprise", "", "enterprise slug")
-	cfgPath := fs.String("config", "", "config file")
+	o := registerCommonFlags(fs)
 	yes := fs.Bool("yes", false, "auto-confirm each remediation")
 	dryRun := fs.Bool("dry-run", false, "describe changes without applying")
 	_ = fs.Parse(args)
 
-	eng, cfg, err := buildEngine(*enterprise, *cfgPath, !*dryRun, false)
+	a, err := buildAssessment(o)
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
 
-	fmt.Printf("\n== GitHub Enterprise Best-Practices Wizard ==\nEnterprise: %s\n\n", cfg.Enterprise)
+	fmt.Printf("\n== GitHub Enterprise Best-Practices Wizard ==\nEnterprise: %s\n\n", a.cfg.Enterprise)
 	fmt.Println("Assessing current state...")
-	sc := eng.Assess(ctx, nil)
+	sc := a.assessWithPolicy(ctx)
 	fmt.Printf("Overall score: %d/100  (pass %d, fail %d, warn %d, manual %d)\n\n",
 		sc.Summary.Score,
 		sc.Summary.Counts[string(rules.StatusPass)],
@@ -328,6 +334,7 @@ func cmdWizard(args []string) error {
 		sc.Summary.Counts[string(rules.StatusWarn)],
 		sc.Summary.Counts[string(rules.StatusManual)])
 
+	var recorded []rules.RemediationResult
 	for _, res := range sc.Results {
 		if res.Status != rules.StatusFail {
 			continue
@@ -344,7 +351,8 @@ func cmdWizard(args []string) error {
 			continue
 		}
 		if *yes || confirm("   Remediate this now?") {
-			rr := eng.Remediate(ctx, []rules.Rule{r}, *dryRun)
+			rr := a.eng.Remediate(ctx, []rules.Rule{r}, *dryRun)
+			recorded = append(recorded, rr...)
 			for _, one := range rr {
 				for _, c := range one.Changes {
 					fmt.Printf("     - %s\n", c)
@@ -356,6 +364,7 @@ func cmdWizard(args []string) error {
 		}
 		fmt.Println()
 	}
+	recordRemediations(ctx, *o.dbPath, a.cfg.Enterprise, recorded)
 	fmt.Println("Wizard complete. Re-run 'assess' to see your updated score.")
 	return nil
 }
@@ -363,10 +372,13 @@ func cmdWizard(args []string) error {
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	enterprise := fs.String("enterprise", "", "enterprise slug")
+	server := fs.String("server", "", "GitHub host: github.com (default), a GHES hostname, or a *.ghe.com data-residency domain")
 	cfgPath := fs.String("config", "", "config file")
 	addr := fs.String("addr", ":8080", "listen address")
 	demo := fs.Bool("demo", false, "serve synthetic demo data (no token required)")
 	dbPath := fs.String("db", "", "record runs to a SQLite history DB (enables trends & /badge.svg)")
+	policyPath := fs.String("policy", "", "config-as-code policy file (YAML): disabled rules, thresholds, waivers")
+	profileName := fs.String("profile", "", "rule profile to run: "+strings.Join(profile.Names(), "|"))
 	basicUser := fs.String("basic-user", "", "enable HTTP basic auth with this username")
 	basicPass := fs.String("basic-pass", "", "HTTP basic auth password (or env GHE_BASIC_PASS)")
 	_ = fs.Parse(args)
@@ -378,11 +390,30 @@ func cmdServe(args []string) error {
 	if *enterprise != "" {
 		cfg.Enterprise = *enterprise
 	}
+	if *server != "" {
+		cfg.Server = *server
+	}
+	if err := cfg.DeriveEndpoints(); err != nil {
+		return err
+	}
+	// Detect GitHub Enterprise Server once at startup (best-effort) so
+	// per-request engines skip cloud-only rules.
+	if !*demo && cfg.Token != "" && cfg.BaseURL != config.DefaultBaseURL {
+		if client, cerr := ghclient.NewFromConfig(cfg); cerr == nil {
+			if v, isGHES, merr := client.ServerMeta(context.Background()); merr == nil && isGHES {
+				cfg.TargetGHES = true
+				cfg.ServerVersion = v
+				fmt.Fprintf(os.Stderr, "Target: GitHub Enterprise Server %s (cloud-only rules will be skipped)\n", v)
+			}
+		}
+	}
 	pass := *basicPass
 	if pass == "" {
 		pass = os.Getenv("GHE_BASIC_PASS")
 	}
-	opts := web.Options{Addr: *addr, Demo: *demo, DBPath: *dbPath, BasicUser: *basicUser, BasicPass: pass}
+	opts := web.Options{Addr: *addr, Demo: *demo, DBPath: *dbPath,
+		PolicyPath: *policyPath, ProfileName: *profileName,
+		BasicUser: *basicUser, BasicPass: pass}
 	authMsg := ""
 	if opts.BasicUser != "" && opts.BasicPass != "" {
 		authMsg = " (basic auth enabled)"
@@ -454,13 +485,14 @@ func recordRun(ctx context.Context, dbPath string, sc *engine.Scorecard) (*store
 	return drift, nil
 }
 
-// cmdHistory prints recent recorded runs for an enterprise.
+// cmdHistory prints recent recorded runs (or remediation logs) for an enterprise.
 func cmdHistory(args []string) error {
 	fs := flag.NewFlagSet("history", flag.ExitOnError)
 	enterprise := fs.String("enterprise", "", "enterprise slug")
 	cfgPath := fs.String("config", "", "config file")
 	dbPath := fs.String("db", "ghe-wizard.db", "SQLite history database path")
-	limit := fs.Int("limit", 20, "number of runs to show")
+	limit := fs.Int("limit", 20, "number of entries to show")
+	remediations := fs.Bool("remediations", false, "show recorded remediation logs instead of scan runs")
 	_ = fs.Parse(args)
 
 	cfg, err := config.Load(*cfgPath)
@@ -478,6 +510,22 @@ func cmdHistory(args []string) error {
 		return err
 	}
 	defer func() { _ = st.Close() }()
+	if *remediations {
+		logs, err := st.Remediations(context.Background(), cfg.Enterprise, *limit)
+		if err != nil {
+			return err
+		}
+		if len(logs) == 0 {
+			fmt.Printf("no recorded remediations for %q in %s\n", cfg.Enterprise, *dbPath)
+			return nil
+		}
+		fmt.Printf("%-20s %-8s %-7s %-7s %s\n", "WHEN (UTC)", "RULE", "APPLIED", "DRY-RUN", "CHANGES")
+		for _, l := range logs {
+			fmt.Printf("%-20s %-8s %-7v %-7v %s\n",
+				l.CreatedAt.Format("2006-01-02 15:04"), l.RuleID, l.Applied, l.DryRun, strings.Join(l.Changes, "; "))
+		}
+		return nil
+	}
 	runs, err := st.Runs(context.Background(), cfg.Enterprise, *limit)
 	if err != nil {
 		return err
@@ -509,6 +557,7 @@ func aiClientFromEnv() *ai.Client {
 func cmdAI(sub string, args []string) error {
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	enterprise := fs.String("enterprise", "", "enterprise slug")
+	server := fs.String("server", "", "GitHub host: github.com (default), a GHES hostname, or a *.ghe.com data-residency domain")
 	cfgPath := fs.String("config", "", "config file")
 	demo := fs.Bool("demo", false, "assess synthetic demo data (no token required)")
 	_ = fs.Parse(args)
@@ -519,7 +568,7 @@ func cmdAI(sub string, args []string) error {
 		return fmt.Errorf("AI not configured: set GHE_AI_ENDPOINT, GHE_AI_MODEL and GHE_AI_KEY")
 	}
 
-	eng, _, err := buildEngine(*enterprise, *cfgPath, !*demo, *demo)
+	eng, _, err := buildEngine(*enterprise, *server, *cfgPath, !*demo, *demo)
 	if err != nil {
 		return err
 	}

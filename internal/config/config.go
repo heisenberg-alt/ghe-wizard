@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -18,6 +19,23 @@ type Config struct {
 	BaseURL string `json:"base_url"`
 	// GraphQLURL is the GraphQL endpoint.
 	GraphQLURL string `json:"graphql_url"`
+	// Server optionally targets a GitHub host other than github.com: a GHES
+	// hostname (e.g. "github.example.com") or a data-residency enterprise
+	// ("acme.ghe.com"). DeriveEndpoints translates it into API endpoints.
+	Server string `json:"server"`
+	// TargetGHES and ServerVersion are detected at runtime (never persisted):
+	// cloud-only rules are skipped when TargetGHES is true.
+	TargetGHES    bool   `json:"-"`
+	ServerVersion string `json:"-"`
+
+	// AppID, AppInstallationID and AppPrivateKeyPath configure GitHub App
+	// installation-token authentication as an alternative to a PAT.
+	AppID             int64  `json:"app_id"`
+	AppInstallationID int64  `json:"app_installation_id"`
+	AppPrivateKeyPath string `json:"app_private_key_path"`
+	// AppPrivateKey is inline PEM key material (env GHE_APP_PRIVATE_KEY only,
+	// never from the config file); it wins over AppPrivateKeyPath.
+	AppPrivateKey string `json:"-"`
 
 	// Thresholds tune assessment rules.
 	Thresholds Thresholds `json:"thresholds"`
@@ -78,6 +96,29 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("GHE_GRAPHQL_URL"); v != "" {
 		cfg.GraphQLURL = v
 	}
+	if v := os.Getenv("GHE_SERVER"); v != "" {
+		cfg.Server = v
+	}
+	if v := os.Getenv("GHE_APP_ID"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("GHE_APP_ID must be numeric: %w", err)
+		}
+		cfg.AppID = id
+	}
+	if v := os.Getenv("GHE_APP_INSTALLATION_ID"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("GHE_APP_INSTALLATION_ID must be numeric: %w", err)
+		}
+		cfg.AppInstallationID = id
+	}
+	if v := os.Getenv("GHE_APP_PRIVATE_KEY_PATH"); v != "" {
+		cfg.AppPrivateKeyPath = v
+	}
+	if v := os.Getenv("GHE_APP_PRIVATE_KEY"); v != "" {
+		cfg.AppPrivateKey = v
+	}
 
 	if cfg.Thresholds.MaxEnterpriseOwners == 0 {
 		cfg.Thresholds.MaxEnterpriseOwners = DefaultThresholds().MaxEnterpriseOwners
@@ -97,14 +138,94 @@ func Load(path string) (*Config, error) {
 // avoiding unbounded pagination on very large organizations.
 const DefaultMaxReposPerOrg = 500
 
-// Validate ensures the minimum required fields are present.
+// DefaultBaseURL and DefaultGraphQLURL are the public GitHub cloud endpoints.
+const (
+	DefaultBaseURL    = "https://api.github.com"
+	DefaultGraphQLURL = "https://api.github.com/graphql"
+)
+
+// DeriveEndpoints resolves BaseURL/GraphQLURL from Server when set:
+// "github.com" keeps the cloud defaults, "*.ghe.com" targets a data-residency
+// enterprise, and anything else is treated as a GitHub Enterprise Server
+// hostname. Explicitly configured non-default endpoints always win.
+func (c *Config) DeriveEndpoints() error {
+	if strings.TrimSpace(c.Server) == "" {
+		return nil
+	}
+	host := strings.TrimSpace(c.Server)
+	host = strings.TrimPrefix(host, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	host = strings.TrimSuffix(host, "/")
+	if host == "" || strings.Contains(host, "/") {
+		return fmt.Errorf("invalid server %q: expected a hostname such as github.example.com or acme.ghe.com", c.Server)
+	}
+	explicitBase := c.BaseURL != "" && c.BaseURL != DefaultBaseURL
+	explicitGQL := c.GraphQLURL != "" && c.GraphQLURL != DefaultGraphQLURL
+	switch {
+	case host == "github.com":
+		// Public cloud: keep the defaults.
+	case strings.HasSuffix(host, ".ghe.com"):
+		// Data residency: https://api.SUBDOMAIN.ghe.com
+		if !explicitBase {
+			c.BaseURL = "https://api." + host
+		}
+		if !explicitGQL {
+			c.GraphQLURL = "https://api." + host + "/graphql"
+		}
+	default:
+		// GitHub Enterprise Server.
+		if !explicitBase {
+			c.BaseURL = "https://" + host + "/api/v3"
+		}
+		if !explicitGQL {
+			c.GraphQLURL = "https://" + host + "/api/graphql"
+		}
+	}
+	return nil
+}
+
+// HasAppAuth reports whether a complete GitHub App credential triple is set.
+func (c *Config) HasAppAuth() bool {
+	return c.AppID != 0 && c.AppInstallationID != 0 &&
+		(c.AppPrivateKey != "" || c.AppPrivateKeyPath != "")
+}
+
+// AppPrivateKeyPEM returns the App private key material: the inline value
+// first, then the file at AppPrivateKeyPath.
+func (c *Config) AppPrivateKeyPEM() ([]byte, error) {
+	if c.AppPrivateKey != "" {
+		return []byte(c.AppPrivateKey), nil
+	}
+	b, err := os.ReadFile(c.AppPrivateKeyPath) // #nosec G304 -- path is an operator-provided key file, not attacker input
+	if err != nil {
+		return nil, fmt.Errorf("read app private key %q: %w", c.AppPrivateKeyPath, err)
+	}
+	return b, nil
+}
+
+// Validate ensures the minimum required fields are present: an enterprise
+// slug and either a token or a complete GitHub App credential triple.
 func (c *Config) Validate() error {
 	var missing []string
 	if strings.TrimSpace(c.Enterprise) == "" {
 		missing = append(missing, "enterprise slug (set --enterprise or GHE_ENTERPRISE)")
 	}
-	if strings.TrimSpace(c.Token) == "" {
-		missing = append(missing, "token (set GHE_TOKEN or GITHUB_TOKEN)")
+	if strings.TrimSpace(c.Token) == "" && !c.HasAppAuth() {
+		if c.AppID != 0 || c.AppInstallationID != 0 || c.AppPrivateKey != "" || c.AppPrivateKeyPath != "" {
+			var app []string
+			if c.AppID == 0 {
+				app = append(app, "GHE_APP_ID")
+			}
+			if c.AppInstallationID == 0 {
+				app = append(app, "GHE_APP_INSTALLATION_ID")
+			}
+			if c.AppPrivateKey == "" && c.AppPrivateKeyPath == "" {
+				app = append(app, "GHE_APP_PRIVATE_KEY or GHE_APP_PRIVATE_KEY_PATH")
+			}
+			missing = append(missing, "incomplete GitHub App auth, missing: "+strings.Join(app, ", "))
+		} else {
+			missing = append(missing, "credentials (set GHE_TOKEN/GITHUB_TOKEN, or GitHub App auth via GHE_APP_ID + GHE_APP_INSTALLATION_ID + GHE_APP_PRIVATE_KEY[_PATH])")
+		}
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required config: %s", strings.Join(missing, "; "))

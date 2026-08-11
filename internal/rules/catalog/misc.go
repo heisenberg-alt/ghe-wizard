@@ -88,6 +88,9 @@ func init() {
 		},
 		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
 			m := rules.ByID("BILL-01").Meta()
+			if res, ok := skipOnGHES(m, cfg, "Enhanced billing with cost centers"); ok {
+				return res
+			}
 			ccs, capb, err := api.CostCenters(ctx, cfg.Enterprise)
 			if err != nil {
 				return rules.Errored(m, err.Error())
