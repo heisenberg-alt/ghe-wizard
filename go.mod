@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.34.5
+	modernc.org/sqlite v1.56.0
 )
 
 require (
