@@ -2,23 +2,14 @@ package report
 
 import (
 	"encoding/csv"
-	"encoding/json"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
 )
 
 var evidenceHeader = []string{"rule_id", "domain", "severity", "status", "title", "detail", "docs_url"}
-
-type evidenceDocument struct {
-	Enterprise  string            `json:"enterprise"`
-	GeneratedAt time.Time         `json:"generated_at"`
-	Score       int               `json:"score"`
-	Findings    []evidenceFinding `json:"findings"`
-}
 
 type evidenceFinding struct {
 	RuleID   string `json:"rule_id"`
@@ -40,19 +31,6 @@ func EvidenceCSV(sc *engine.Scorecard) string {
 	}
 	w.Flush()
 	return b.String()
-}
-
-// EvidenceJSON renders a deterministic, compliance-friendly JSON evidence export.
-func EvidenceJSON(sc *engine.Scorecard) ([]byte, error) {
-	doc := evidenceDocument{
-		Findings: evidenceFindings(sc),
-	}
-	if sc != nil {
-		doc.Enterprise = sc.Enterprise
-		doc.GeneratedAt = sc.GeneratedAt
-		doc.Score = sc.Summary.Score
-	}
-	return json.MarshalIndent(doc, "", "  ")
 }
 
 func evidenceFindings(sc *engine.Scorecard) []evidenceFinding {

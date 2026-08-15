@@ -29,9 +29,6 @@ const (
 // httpClient is shared across notifications to enable connection reuse.
 var httpClient = &http.Client{Timeout: httpTimeout}
 
-// Notifier sends a scorecard summary to a ChatOps webhook.
-type Notifier func(ctx context.Context, webhookURL string, sc *engine.Scorecard, drift *store.Drift) error
-
 // Send auto-detects the webhook provider and sends a notification.
 func Send(ctx context.Context, webhookURL string, sc *engine.Scorecard, drift *store.Drift) error {
 	switch {
@@ -68,7 +65,7 @@ func Slack(ctx context.Context, webhookURL string, sc *engine.Scorecard, drift *
 	if err := validate(webhookURL, sc); err != nil {
 		return err
 	}
-	payload := map[string]string{"text": slackText(sc, drift)}
+	payload := map[string]string{"text": chatText(sc, drift, "*")}
 	return postJSON(ctx, webhookURL, payload)
 }
 
@@ -97,7 +94,7 @@ func Discord(ctx context.Context, webhookURL string, sc *engine.Scorecard, drift
 	if err := validate(webhookURL, sc); err != nil {
 		return err
 	}
-	payload := map[string]string{"content": truncate(discordText(sc, drift), discordContentLimit)}
+	payload := map[string]string{"content": truncate(chatText(sc, drift, "**"), discordContentLimit)}
 	return postJSON(ctx, webhookURL, payload)
 }
 
@@ -261,23 +258,12 @@ func postJSON(ctx context.Context, webhookURL string, payload any) error {
 	return nil
 }
 
-func slackText(sc *engine.Scorecard, drift *store.Drift) string {
+// chatText renders the shared plain-text summary; bold is the platform's
+// bold marker ("*" for Slack, "**" for Discord).
+func chatText(sc *engine.Scorecard, drift *store.Drift, bold string) string {
 	lines := []string{
-		fmt.Sprintf("*GitHub Enterprise assessment: %s*", sc.Enterprise),
-		fmt.Sprintf("Score: *%d* (%s)", sc.Summary.Score, Grade(sc.Summary.Score)),
-		fmt.Sprintf("Counts: fail=%d warn=%d manual=%d pass=%d",
-			count(sc, rules.StatusFail), count(sc, rules.StatusWarn),
-			count(sc, rules.StatusManual), count(sc, rules.StatusPass)),
-	}
-	lines = append(lines, findingsLines("Top failing findings:", "•", sc)...)
-	lines = append(lines, driftLines(drift)...)
-	return strings.Join(lines, "\n")
-}
-
-func discordText(sc *engine.Scorecard, drift *store.Drift) string {
-	lines := []string{
-		fmt.Sprintf("**GitHub Enterprise assessment: %s**", sc.Enterprise),
-		fmt.Sprintf("Score: **%d** (%s)", sc.Summary.Score, Grade(sc.Summary.Score)),
+		fmt.Sprintf("%[1]sGitHub Enterprise assessment: %[2]s%[1]s", bold, sc.Enterprise),
+		fmt.Sprintf("Score: %[1]s%[2]d%[1]s (%[3]s)", bold, sc.Summary.Score, Grade(sc.Summary.Score)),
 		fmt.Sprintf("Counts: fail=%d warn=%d manual=%d pass=%d",
 			count(sc, rules.StatusFail), count(sc, rules.StatusWarn),
 			count(sc, rules.StatusManual), count(sc, rules.StatusPass)),

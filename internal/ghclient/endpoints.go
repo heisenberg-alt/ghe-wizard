@@ -178,7 +178,6 @@ func (c *Client) OrgSettings(ctx context.Context, org string) (*OrgSettings, err
 		MembersCanCreateRepositories              bool   `json:"members_can_create_repositories"`
 		MembersCanCreatePublicRepositories        bool   `json:"members_can_create_public_repositories"`
 		WebCommitSignoffRequired                  bool   `json:"web_commit_signoff_required"`
-		AdvancedSecurityEnabledForNewRepositories bool   `json:"advanced_security_enabled_for_new_repositories"`
 		SecretScanningEnabledForNewRepositories   bool   `json:"secret_scanning_enabled_for_new_repositories"`
 		SecretScanningPushProtectionEnabledForNew bool   `json:"secret_scanning_push_protection_enabled_for_new_repositories"`
 		DependencyGraphEnabledForNewRepositories  bool   `json:"dependency_graph_enabled_for_new_repositories"`
@@ -195,7 +194,6 @@ func (c *Client) OrgSettings(ctx context.Context, org string) (*OrgSettings, err
 		MembersCanCreateRepos:       raw.MembersCanCreateRepositories,
 		MembersCanCreatePublicRepos: raw.MembersCanCreatePublicRepositories,
 		WebCommitSignoffRequired:    raw.WebCommitSignoffRequired,
-		AdvancedSecurityEnabled:     raw.AdvancedSecurityEnabledForNewRepositories,
 		SecretScanningEnabled:       raw.SecretScanningEnabledForNewRepositories,
 		SecretScanningPushProtect:   raw.SecretScanningPushProtectionEnabledForNew,
 		DependencyGraphEnabled:      raw.DependencyGraphEnabledForNewRepositories,
@@ -213,7 +211,6 @@ func (c *Client) OrgRepos(ctx context.Context, org string, limit int) ([]Reposit
 		var batch []struct {
 			Name          string    `json:"name"`
 			FullName      string    `json:"full_name"`
-			Private       bool      `json:"private"`
 			Visibility    string    `json:"visibility"`
 			Archived      bool      `json:"archived"`
 			PushedAt      time.Time `json:"pushed_at"`
@@ -224,7 +221,7 @@ func (c *Client) OrgRepos(ctx context.Context, org string, limit int) ([]Reposit
 		}
 		for _, r := range batch {
 			repos = append(repos, Repository{
-				Name: r.Name, FullName: r.FullName, Private: r.Private,
+				Name: r.Name, FullName: r.FullName,
 				Visibility: r.Visibility, Archived: r.Archived,
 				PushedAt: r.PushedAt, DefaultBranch: r.DefaultBranch,
 			})

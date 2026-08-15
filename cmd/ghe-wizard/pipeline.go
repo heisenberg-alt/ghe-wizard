@@ -65,6 +65,7 @@ func buildAssessment(o *commonOpts) (*assessment, error) {
 		return nil, err
 	}
 	pol.ApplyThresholds(&cfg.Thresholds.MaxEnterpriseOwners, &cfg.Thresholds.StaleOrgDays)
+	pol.ApplyIdentity(&cfg.Identity)
 	known := map[string]bool{}
 	for _, r := range rules.All() {
 		known[r.Meta().ID] = true

@@ -16,6 +16,31 @@ thresholds:
   max_enterprise_owners: 3
   stale_org_days: 90
 
+# Identity governance (IDENT-* rules): corporate-domain policy and the
+# detect -> warn -> prevent pipeline for personal accounts registered with
+# corporate email.
+identity:
+  # Corporate email domains. These EXTEND the enterprise's GitHub-verified
+  # domains, which always count as corporate.
+  approved_domains:
+    - acme.com
+  # Warn when enterprise members carry a corporate-domain email on their
+  # personal account (default false = inventory only).
+  forbid_corporate_email_on_members: true
+  # Per-organization outside-collaborator threshold: -1 = not enforced,
+  # 0 = none allowed (enables the destructive removal remediation).
+  max_outside_collaborators: 0
+  # Logins never flagged or remediated by identity rules.
+  allow_users:
+    - oss-liaison-bot
+  # Optional data imports for the pipeline:
+  # roster_csv: one current-employee email or IdP name-ID per line (IDENT-09).
+  # mail_trace_csv: mail-gateway message-trace export of GitHub signup mail
+  #                 recipients (IDENT-10). Generate the matching Exchange
+  #                 transport rule with: ghe-wizard identity transport-rule
+  # roster_csv: hr-roster.csv
+  # mail_trace_csv: github-signup-trace.csv
+
 # Accepted risks. A waiver converts a failing/warning finding to "waived",
 # excluding it from the score and from --fail-on gating until it expires.
 waivers:

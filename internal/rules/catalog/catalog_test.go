@@ -125,6 +125,10 @@ func (f *fakeAPI) CreateEnterpriseRuleset(ctx context.Context, slug string, payl
 	f.record("CreateEnterpriseRuleset %s", slug)
 	return nil
 }
+func (f *fakeAPI) RemoveOutsideCollaborator(ctx context.Context, org, login string) error {
+	f.record("RemoveOutsideCollaborator %s %s", org, login)
+	return nil
+}
 
 // readOnlyAPI exposes only the read surface of a fakeAPI: embedding the GHAPI
 // interface promotes just its methods, so no WriteAPI and no Unwrap exist.

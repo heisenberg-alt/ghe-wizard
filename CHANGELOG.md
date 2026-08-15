@@ -4,7 +4,12 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.0] - 2026-08-11
+
+Governance release: a critical remediation fix, GitHub App authentication,
+identity governance for corporate email on personal accounts, remediation
+coverage expansion, GHES/data-residency support, and full policy parity
+across CLI, dashboard and the GitHub Action.
 
 ### Fixed
 - **Live remediation previously never reached GitHub.** Every remediation
@@ -20,6 +25,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   recorded them, despite the 1.2.0 changelog entry).
 
 ### Added
+- **Identity governance (new domain, 10 rules)** for the corporate-email-on-
+  personal-accounts problem: verified/approved domains (IDENT-01), member
+  corporate-email inventory with a configurable *forbid* posture (IDENT-07),
+  rogue-account public-signal sweep with explicit partial-coverage labeling
+  (IDENT-08), HR-roster offboarding cross-check (IDENT-09), mail-gateway
+  signup-trace cross-check — the only complete rogue detector (IDENT-10),
+  outside-collaborator thresholds with destructive-gated removal (IDENT-04),
+  SSO-linkage hygiene (IDENT-05), notification-restriction guidance
+  (IDENT-02), member identifiability (IDENT-03) and an EMU advisory
+  (IDENT-06). Configured via the policy file's new `identity:` section.
+- **`ghe-wizard identity warn`** — generates the per-user warning campaign
+  (CSV/Markdown) across all affected populations with deadlines; compliance
+  is tracked by re-scan drift. **`ghe-wizard identity transport-rule`** —
+  generates the Exchange Online transport rule that prevents completing
+  GitHub signup with corporate email, plus the message-trace export query.
+- **Destructive-remediation gating:** rules that remove people/access/seats
+  are excluded from bulk apply, the wizard and the dashboard; they run only
+  with an explicit `--rules` selection plus `--allow-destructive`, and are
+  marked `[DESTRUCTIVE]` in the confirmation prompt.
+- `compliance` profile now includes the identity domain.
 - **GitHub Enterprise Server & data residency:** `--server` (or `GHE_SERVER`)
   targets a GHES hostname or a `*.ghe.com` data-residency enterprise; API
   endpoints are derived automatically and explicit `GHE_BASE_URL`/
@@ -74,6 +99,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - `apply` and `wizard` respect policy waivers and disabled rules — previously
   they would remediate findings your policy had accepted.
+
+### Removed
+- Staff-review dead-code sweep: `Engine.FailingRules` (superseded by
+  `RemediableFailures`), the unused `notify.Notifier` type,
+  `report.EvidenceJSON` (the CLI exports scorecard JSON and evidence CSV),
+  `catalog.Load()`, the unused `web.Serve` wrapper, `rules.ByDomain`, and
+  never-read struct fields (`Config.DryRun`, `Enterprise.TwoFactorReq`,
+  `Organization.UpdatedAt`/`ReposURL`, `OrgSettings.AdvancedSecurityEnabled`,
+  `Repository.Private`). Deduplicated the Slack/Discord text rendering and
+  the GHES-detection logic.
 
 ## [1.2.0] - 2026-08-06
 
@@ -148,6 +183,7 @@ performance pass.
   Cloud, as an interactive CLI and an embedded web dashboard. Read-only
   assessment with a 0–100 scorecard and idempotent, dry-runnable remediations.
 
+[1.3.0]: https://github.com/heisenberg-alt/ghe-wizard/releases/tag/v1.3.0
 [1.2.0]: https://github.com/heisenberg-alt/ghe-wizard/releases/tag/v1.2.0
 [1.1.0]: https://github.com/heisenberg-alt/ghe-wizard/releases/tag/v1.1.0
 [1.0.0]: https://github.com/heisenberg-alt/ghe-wizard/releases/tag/v1.0.0

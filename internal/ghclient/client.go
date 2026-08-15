@@ -41,9 +41,8 @@ type Capability struct {
 // --- Domain types ---------------------------------------------------------
 
 type Enterprise struct {
-	Slug         string
-	Name         string
-	TwoFactorReq bool
+	Slug string
+	Name string
 	// SAML/OIDC configured at the enterprise level.
 	SAMLEnabled bool
 	// EMU indicates an Enterprise Managed Users enterprise (best-effort).
@@ -67,8 +66,6 @@ type Organization struct {
 	Login     string
 	ID        int64
 	CreatedAt time.Time
-	UpdatedAt time.Time
-	ReposURL  string
 }
 
 type OrgSettings struct {
@@ -78,7 +75,6 @@ type OrgSettings struct {
 	MembersCanCreateRepos       bool
 	MembersCanCreatePublicRepos bool
 	WebCommitSignoffRequired    bool
-	AdvancedSecurityEnabled     bool
 	SecretScanningEnabled       bool
 	SecretScanningPushProtect   bool
 	// Dependabot/dependency-graph defaults for new repositories.
@@ -90,7 +86,6 @@ type OrgSettings struct {
 type Repository struct {
 	Name          string
 	FullName      string
-	Private       bool
 	Visibility    string // public|private|internal
 	Archived      bool
 	PushedAt      time.Time

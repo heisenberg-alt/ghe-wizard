@@ -2,6 +2,7 @@ package ghclient
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -22,6 +23,12 @@ type Cached struct {
 
 	set   map[string]*cacheEntry[*OrgSettings]
 	repos map[string]*cacheEntry[[]Repository]
+
+	// Identity reads (see IdentityAPI); memoized like the core reads.
+	doms      *cacheEntry[domainsResult]
+	sso       *cacheEntry[ssoResult]
+	memberIDs map[string]*cacheEntry[membersResult]
+	oc        map[string]*cacheEntry[[]User]
 }
 
 type cacheEntry[T any] struct {
@@ -172,4 +179,129 @@ func (c *Cached) Prefetch(ctx context.Context, slug string, maxOrgs, maxRepos in
 		}(o.Login)
 	}
 	wg.Wait()
+}
+
+// --- IdentityAPI: memoized identity reads -----------------------------------
+
+// identityUnavailable is the capability reason when the wrapped API has no
+// identity surface (e.g. plain test mocks).
+const identityUnavailable = "identity data source unavailable with this client"
+
+type domainsResult struct {
+	v    []VerifiedDomain
+	capb Capability
+}
+
+type membersResult struct {
+	v    []MemberIdentity
+	capb Capability
+}
+
+type ssoResult struct {
+	v    []SSOIdentity
+	capb Capability
+}
+
+// EnterpriseVerifiedDomains memoizes the inner identity read; several IDENT-*
+// rules derive the corporate-domain set from it.
+func (c *Cached) EnterpriseVerifiedDomains(ctx context.Context, slug string) ([]VerifiedDomain, Capability, error) {
+	inner, ok := Identity(c.inner)
+	if !ok {
+		return nil, Capability{Determined: false, Reason: identityUnavailable}, nil
+	}
+	c.mu.Lock()
+	if c.doms == nil {
+		c.doms = &cacheEntry[domainsResult]{}
+	}
+	e := c.doms
+	c.mu.Unlock()
+	e.once.Do(func() {
+		var r domainsResult
+		r.v, r.capb, e.err = inner.EnterpriseVerifiedDomains(ctx, slug)
+		e.val = r
+	})
+	return e.val.v, e.val.capb, e.err
+}
+
+// OrgMemberVerifiedEmails memoizes per org — IDENT-03/05/07/08/10 all consume
+// the member inventory.
+func (c *Cached) OrgMemberVerifiedEmails(ctx context.Context, org string) ([]MemberIdentity, Capability, error) {
+	inner, ok := Identity(c.inner)
+	if !ok {
+		return nil, Capability{Determined: false, Reason: identityUnavailable}, nil
+	}
+	c.mu.Lock()
+	if c.memberIDs == nil {
+		c.memberIDs = map[string]*cacheEntry[membersResult]{}
+	}
+	e := c.memberIDs[org]
+	if e == nil {
+		e = &cacheEntry[membersResult]{}
+		c.memberIDs[org] = e
+	}
+	c.mu.Unlock()
+	e.once.Do(func() {
+		var r membersResult
+		r.v, r.capb, e.err = inner.OrgMemberVerifiedEmails(ctx, org)
+		e.val = r
+	})
+	return e.val.v, e.val.capb, e.err
+}
+
+// SSOIdentities memoizes the enterprise SSO identity list.
+func (c *Cached) SSOIdentities(ctx context.Context, slug string) ([]SSOIdentity, Capability, error) {
+	inner, ok := Identity(c.inner)
+	if !ok {
+		return nil, Capability{Determined: false, Reason: identityUnavailable}, nil
+	}
+	c.mu.Lock()
+	if c.sso == nil {
+		c.sso = &cacheEntry[ssoResult]{}
+	}
+	e := c.sso
+	c.mu.Unlock()
+	e.once.Do(func() {
+		var r ssoResult
+		r.v, r.capb, e.err = inner.SSOIdentities(ctx, slug)
+		e.val = r
+	})
+	return e.val.v, e.val.capb, e.err
+}
+
+// OutsideCollaborators memoizes per org.
+func (c *Cached) OutsideCollaborators(ctx context.Context, org string) ([]User, error) {
+	inner, ok := Identity(c.inner)
+	if !ok {
+		return nil, errors.New(identityUnavailable)
+	}
+	c.mu.Lock()
+	if c.oc == nil {
+		c.oc = map[string]*cacheEntry[[]User]{}
+	}
+	e := c.oc[org]
+	if e == nil {
+		e = &cacheEntry[[]User]{}
+		c.oc[org] = e
+	}
+	c.mu.Unlock()
+	e.once.Do(func() { e.val, e.err = inner.OutsideCollaborators(ctx, org) })
+	return e.val, e.err
+}
+
+// SearchUsersByEmailDomain passes through (one caller per assessment).
+func (c *Cached) SearchUsersByEmailDomain(ctx context.Context, domain string) ([]string, Capability, error) {
+	inner, ok := Identity(c.inner)
+	if !ok {
+		return nil, Capability{Determined: false, Reason: identityUnavailable}, nil
+	}
+	return inner.SearchUsersByEmailDomain(ctx, domain)
+}
+
+// SearchCommitAuthorsByDomain passes through (one caller per assessment).
+func (c *Cached) SearchCommitAuthorsByDomain(ctx context.Context, domain string) ([]string, Capability, error) {
+	inner, ok := Identity(c.inner)
+	if !ok {
+		return nil, Capability{Determined: false, Reason: identityUnavailable}, nil
+	}
+	return inner.SearchCommitAuthorsByDomain(ctx, domain)
 }

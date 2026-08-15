@@ -40,8 +40,10 @@ type Config struct {
 	// Thresholds tune assessment rules.
 	Thresholds Thresholds `json:"thresholds"`
 
-	// DryRun, when true, makes remediations describe changes without applying them.
-	DryRun bool `json:"dry_run"`
+	// Identity governs the identity rules (IDENT-*). Usually populated from
+	// the policy file's identity: section.
+	Identity IdentityConfig `json:"identity"`
+
 	// MaxOrgs caps how many organizations are scanned (0 = no cap).
 	MaxOrgs int `json:"max_orgs"`
 	// MaxReposPerOrg bounds the per-org repository scan (0 = default). Requested
@@ -55,6 +57,41 @@ type Config struct {
 type Thresholds struct {
 	MaxEnterpriseOwners int `json:"max_enterprise_owners"`
 	StaleOrgDays        int `json:"stale_org_days"`
+}
+
+// IdentityConfig governs the identity rules (IDENT-*): corporate-domain
+// policy, outside-collaborator thresholds, and the data imports used by the
+// detect → warn → prevent pipeline.
+type IdentityConfig struct {
+	// ApprovedDomains lists corporate email domains (e.g. "acme.com"). They
+	// extend the enterprise's GitHub-verified domains, which are always
+	// treated as corporate.
+	ApprovedDomains []string `json:"approved_domains"`
+	// ForbidCorporateEmailOnMembers makes IDENT-07 warn when enterprise
+	// members carry a corporate-domain email on their personal account
+	// (default: inventory only).
+	ForbidCorporateEmailOnMembers bool `json:"forbid_corporate_email_on_members"`
+	// MaxOutsideCollaborators is the per-organization threshold for IDENT-04.
+	// -1 disables enforcement; 0 means no outside collaborators allowed.
+	MaxOutsideCollaborators int `json:"max_outside_collaborators"`
+	// AllowUsers are logins never flagged or remediated by identity rules.
+	AllowUsers []string `json:"allow_users"`
+	// RosterCSV is a CSV of current-employee identities (one email or IdP
+	// name-ID per line, header optional) for the IDENT-09 offboarding check.
+	RosterCSV string `json:"roster_csv"`
+	// MailTraceCSV is a mail-gateway message-trace export (recipient address
+	// per line/column) of GitHub signup mail for the IDENT-10 check.
+	MailTraceCSV string `json:"mail_trace_csv"`
+}
+
+// AllowsUser reports whether a login is exempted from identity findings.
+func (ic *IdentityConfig) AllowsUser(login string) bool {
+	for _, u := range ic.AllowUsers {
+		if strings.EqualFold(u, login) {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultThresholds returns GitHub-guidance-aligned defaults.
@@ -72,6 +109,7 @@ func Load(path string) (*Config, error) {
 		BaseURL:    "https://api.github.com",
 		GraphQLURL: "https://api.github.com/graphql",
 		Thresholds: DefaultThresholds(),
+		Identity:   IdentityConfig{MaxOutsideCollaborators: -1},
 	}
 
 	if path != "" {

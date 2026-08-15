@@ -45,11 +45,6 @@ type Options struct {
 	WriteTimeout time.Duration
 }
 
-// Serve starts the dashboard HTTP server on addr with sensible defaults.
-func Serve(addr string, base *config.Config) error {
-	return ServeWithOptions(Options{Addr: addr}, base)
-}
-
 // newServer builds the dashboard server, loading the policy and profile up
 // front so bad configuration fails at startup rather than per-request. The
 // demo API is shared across requests so demo remediations visibly improve
@@ -164,6 +159,7 @@ func (s *server) cfgFor(b reqBody) *config.Config {
 	}
 	// Config-as-code thresholds apply to every request-scoped config.
 	s.pol.ApplyThresholds(&c.Thresholds.MaxEnterpriseOwners, &c.Thresholds.StaleOrgDays)
+	s.pol.ApplyIdentity(&c.Identity)
 	return &c
 }
 
@@ -380,6 +376,9 @@ func (s *server) handleApply(w http.ResponseWriter, r *http.Request) {
 			}
 			st, ran := statusByID[id]
 			switch {
+			case rl.Meta().Destructive:
+				results = append(results, rules.RemediationResult{RuleID: id, DryRun: b.DryRun,
+					Errors: []string{"skipped: destructive remediation is CLI-only (apply --rules " + id + " --allow-destructive)"}})
 			case !ran:
 				results = append(results, rules.RemediationResult{RuleID: id, DryRun: b.DryRun,
 					Errors: []string{"skipped: disabled by policy or excluded by profile"}})

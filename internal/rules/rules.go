@@ -43,6 +43,7 @@ const (
 	DomainRepos       Domain = "repositories"
 	DomainPolicies    Domain = "policies"
 	DomainSecurity    Domain = "security"
+	DomainIdentity    Domain = "identity"
 	DomainInnersource Domain = "innersource"
 	DomainAutomation  Domain = "automation"
 	DomainBilling     Domain = "billing"
@@ -57,6 +58,11 @@ type Meta struct {
 	Rationale  string   `json:"rationale"`
 	DocsURL    string   `json:"docs_url"`
 	Remediable bool     `json:"remediable"`
+	// Destructive marks remediations that remove people, access or seats
+	// rather than flipping settings. They are excluded from bulk apply and
+	// from the dashboard, and run only with an explicit rule selection plus
+	// --allow-destructive on the CLI.
+	Destructive bool `json:"destructive,omitempty"`
 }
 
 // Result is the outcome of assessing a rule.
@@ -97,17 +103,6 @@ func Register(r Rule) { registry = append(registry, r) }
 func All() []Rule {
 	out := make([]Rule, len(registry))
 	copy(out, registry)
-	return out
-}
-
-// ByDomain returns rules for a domain.
-func ByDomain(d Domain) []Rule {
-	var out []Rule
-	for _, r := range registry {
-		if r.Meta().Domain == d {
-			out = append(out, r)
-		}
-	}
 	return out
 }
 

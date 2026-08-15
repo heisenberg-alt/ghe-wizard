@@ -50,10 +50,25 @@ jobs:
           done
           ls -l dist
 
+      - name: Extract changelog section
+        run: |
+          # Pull this version's section from CHANGELOG.md into the release body.
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            /^## \[/ { if (found) exit; if (index($0, "[" ver "]") > 0) { found=1; next } }
+            found { print }
+          ' CHANGELOG.md > dist/release-notes.md
+          if [ ! -s dist/release-notes.md ]; then
+            echo "No CHANGELOG section found for ${VERSION}; falling back to generated notes only." | tee dist/release-notes.md
+          fi
+          cat dist/release-notes.md
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: dist/release-notes.md
           generate_release_notes: true
+          append_body: true
           files: |
             dist/ghe-wizard_*
             dist/checksums.txt

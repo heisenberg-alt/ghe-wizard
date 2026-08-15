@@ -47,8 +47,8 @@ var registry = map[string]Profile{
 	},
 	"compliance": {
 		Name:        "compliance",
-		Description: "Security and policy rules for audit evidence.",
-		Domains:     []rules.Domain{rules.DomainSecurity, rules.DomainPolicies},
+		Description: "Security, identity and policy rules for audit evidence.",
+		Domains:     []rules.Domain{rules.DomainSecurity, rules.DomainIdentity, rules.DomainPolicies},
 	},
 }
 

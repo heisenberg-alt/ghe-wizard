@@ -20,6 +20,7 @@ type DemoAPI struct {
 	dependabot   map[string]bool   // org -> overridden dependency-graph/Dependabot defaults
 	publicRepo   map[string]bool   // org -> overridden members-can-create-public-repos
 	signoff      map[string]bool   // org -> overridden web-commit-signoff requirement
+	removedOC    map[string]bool   // "org/login" -> outside collaborator removed via remediation
 	workflowPerm string            // overridden enterprise default workflow permissions
 	props        []CustomProperty  // custom properties added via remediation
 	rulesets     []Ruleset         // rulesets created via remediation
@@ -34,6 +35,7 @@ func NewDemoAPI() *DemoAPI {
 		dependabot: map[string]bool{},
 		publicRepo: map[string]bool{},
 		signoff:    map[string]bool{},
+		removedOC:  map[string]bool{},
 	}
 }
 
@@ -241,6 +243,88 @@ func (d *DemoAPI) SetEnterpriseDefaultWorkflowPermissions(ctx context.Context, s
 	defer d.mu.Unlock()
 	d.workflowPerm = perm
 	return nil
+}
+
+func (d *DemoAPI) RemoveOutsideCollaborator(ctx context.Context, org, login string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.removedOC[org+"/"+login] = true
+	return nil
+}
+
+// --- IdentityAPI: synthetic identity-governance data ------------------------
+
+func (d *DemoAPI) EnterpriseVerifiedDomains(ctx context.Context, slug string) ([]VerifiedDomain, Capability, error) {
+	// Verified but not approved -> IDENT-01 flags the missing approval step.
+	return []VerifiedDomain{
+		{Domain: "acme-corp.com", IsVerified: true, IsApproved: false},
+	}, Capability{Determined: true}, nil
+}
+
+func (d *DemoAPI) OrgMemberVerifiedEmails(ctx context.Context, org string) ([]MemberIdentity, Capability, error) {
+	members := map[string][]MemberIdentity{
+		"acme-payments": {
+			{Login: "alice", VerifiedEmails: []string{"alice@acme-corp.com"}},
+			{Login: "bob", VerifiedEmails: []string{"bob@acme-corp.com"}},
+		},
+		"acme-platform": {
+			{Login: "carol"},
+			{Login: "dave"},
+		},
+		"acme-web": {
+			{Login: "erin", VerifiedEmails: []string{"erin@acme-corp.com"}},
+			{Login: "frank"},
+		},
+		"acme-labs": {
+			{Login: "grace"},
+		},
+		"acme-legacy": {
+			// Duplicate membership across orgs, like real enterprises.
+			{Login: "bob", VerifiedEmails: []string{"bob@acme-corp.com"}},
+		},
+	}
+	return members[org], Capability{Determined: true}, nil
+}
+
+func (d *DemoAPI) SSOIdentities(ctx context.Context, slug string) ([]SSOIdentity, Capability, error) {
+	// erin, frank and grace are not SSO-linked -> IDENT-05 flags them.
+	return []SSOIdentity{
+		{Login: "alice", NameID: "alice@acme-corp.com"},
+		{Login: "bob", NameID: "bob@acme-corp.com"},
+		{Login: "carol", NameID: "carol@acme-corp.com"},
+		{Login: "dave", NameID: "dave@acme-corp.com"},
+		{Login: "", NameID: "departed-dev@acme-corp.com"}, // identity without a linked account
+	}, Capability{Determined: true}, nil
+}
+
+func (d *DemoAPI) OutsideCollaborators(ctx context.Context, org string) ([]User, error) {
+	base := map[string][]User{
+		"acme-web":    {{Login: "contractor-jane", ID: 9001}},
+		"acme-legacy": {{Login: "old-vendor-bot", ID: 9002}},
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var out []User
+	for _, u := range base[org] {
+		if !d.removedOC[org+"/"+u.Login] {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+func (d *DemoAPI) SearchUsersByEmailDomain(ctx context.Context, domain string) ([]string, Capability, error) {
+	if domain == "acme-corp.com" {
+		return []string{"rogue-dev-1"}, Capability{Determined: true}, nil
+	}
+	return nil, Capability{Determined: true}, nil
+}
+
+func (d *DemoAPI) SearchCommitAuthorsByDomain(ctx context.Context, domain string) ([]string, Capability, error) {
+	if domain == "acme-corp.com" {
+		return []string{"rogue-dev-2", "alice"}, Capability{Determined: true}, nil
+	}
+	return nil, Capability{Determined: true}, nil
 }
 
 func (d *DemoAPI) CreateEnterpriseCustomProperty(ctx context.Context, slug, name, valueType string, required bool) error {

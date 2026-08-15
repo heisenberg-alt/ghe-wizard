@@ -27,7 +27,7 @@ documentation.
 > enterprise so you can explore the scorecard and remediation flow instantly.
 
 
-## What it checks (31 rules, 9 domains)
+## What it checks (41 rules, 10 domains)
 
 | Domain | Examples |
 |---|---|
@@ -37,6 +37,7 @@ documentation.
 | Repositories | org-owned collaboration, custom properties, repo-creation controls |
 | Policies | branch rulesets, IP allow list, Copilot policies, read-only workflow token, allowed-actions policy |
 | Security | enterprise SSO, SCIM, 2FA, audit-log streaming, secret scanning, Dependabot alerts |
+| Identity | verified/approved domains, corporate email on personal accounts, outside collaborators, SSO linkage, offboarding & signup-trace cross-checks |
 | Innersource | internal-visibility repos for discovery & reuse |
 | Automation | GitHub Apps over PATs, automated provisioning |
 | Billing | cost centers, spending limits |
@@ -175,6 +176,50 @@ ghe-wizard assess --demo --db ghe-wizard.db     # record a run
 ghe-wizard history --enterprise acme-corp --db ghe-wizard.db
 ghe-wizard history --enterprise acme-corp --db ghe-wizard.db --remediations
 ghe-wizard serve --db ghe-wizard.db             # dashboard trends + /badge.svg
+```
+
+### Identity governance: corporate email on personal accounts
+
+Employees registering **personal** GitHub accounts with corporate email
+(`@acme.com`) create recovery and shadow-IT risk. The identity rules
+implement a detect → warn → prevent pipeline:
+
+```yaml
+# policy.yaml
+identity:
+  approved_domains: [acme.com]           # extends GitHub-verified domains
+  forbid_corporate_email_on_members: true
+  max_outside_collaborators: 0
+  # roster_csv: hr-roster.csv            # offboarding cross-check (IDENT-09)
+  # mail_trace_csv: github-signup-trace.csv   # complete rogue detection (IDENT-10)
+```
+
+```bash
+# Detect: members with corporate email, rogue accounts (public signals +
+# mail-gateway trace), departed employees still linked
+ghe-wizard assess --policy policy.yaml
+
+# Warn: generate the per-user notification campaign (CSV or Markdown)
+ghe-wizard identity warn --policy policy.yaml --grace-days 14 --out campaign.csv
+
+# Prevent: generate the Exchange Online transport rule that blocks completing
+# GitHub signup with corporate email (plus the message-trace export query)
+ghe-wizard identity transport-rule --domain acme.com \
+  --allowlist oss-liaison@acme.com --out prevent-github-signup.ps1
+```
+
+Honest limits, stated in the output: the enterprise cannot delete an
+employee's personal account (only the owner can); GitHub has no API to find
+accounts by private registration email, so public-signal sweeps are partial
+by design — the mail-gateway trace is the complete detector. Only EMU
+eliminates personal accounts entirely (IDENT-06). Track campaign compliance
+by re-running `assess --db`: drift shows warned findings turning fixed.
+
+Removing outside collaborators (IDENT-04) is **destructive** and never runs
+in bulk or from the dashboard:
+
+```bash
+ghe-wizard apply --rules IDENT-04 --allow-destructive --dry-run   # review first
 ```
 
 ### Config-as-code & waivers

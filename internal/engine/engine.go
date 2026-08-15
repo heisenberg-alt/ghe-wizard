@@ -119,33 +119,20 @@ func (e *Engine) AssessStream(ctx context.Context, rs []rules.Rule, emit func(to
 	return sc
 }
 
-// FailingRules assesses and returns the rules whose status is fail or warn.
-func (e *Engine) FailingRules(ctx context.Context, rs []rules.Rule) []rules.Rule {
-	if len(rs) == 0 {
-		rs = rules.All()
-	}
-	var failing []rules.Rule
-	for _, r := range rs {
-		res := r.Assess(ctx, e.api, e.cfg)
-		if res.Status == rules.StatusFail || res.Status == rules.StatusWarn {
-			failing = append(failing, r)
-		}
-	}
-	return failing
-}
-
 // RemediableFailures returns the registered rules whose result in sc is fail
 // or warn and remediable. Rules disabled by policy never appear in sc, and
 // waived findings carry StatusWaived, so both are naturally excluded — this
 // lets apply-style commands reuse an existing scorecard instead of
-// re-assessing, while honoring policy.
+// re-assessing, while honoring policy. Destructive remediations are excluded
+// from bulk targeting: they require an explicit rule selection plus
+// --allow-destructive.
 func RemediableFailures(sc *Scorecard) []rules.Rule {
 	var out []rules.Rule
 	for _, res := range sc.Results {
 		if res.Status != rules.StatusFail && res.Status != rules.StatusWarn {
 			continue
 		}
-		if !res.Meta.Remediable {
+		if !res.Meta.Remediable || res.Meta.Destructive {
 			continue
 		}
 		if r := rules.ByID(res.Meta.ID); r != nil {

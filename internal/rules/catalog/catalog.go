@@ -9,10 +9,6 @@ import (
 
 const docsBase = "https://docs.github.com/en/enterprise-cloud@latest"
 
-// Load is a no-op that exists so callers can force-import this package to
-// trigger the init() registrations in each catalog file.
-func Load() {}
-
 // skipOnGHES returns a skipped result (excluded from the score) when the
 // target is a GitHub Enterprise Server installation and the rule depends on a
 // cloud-only feature.

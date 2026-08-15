@@ -26,6 +26,10 @@ type WriteAPI interface {
 	SetEnterpriseDefaultWorkflowPermissions(ctx context.Context, slug, perm string) error
 	CreateEnterpriseCustomProperty(ctx context.Context, slug, name, valueType string, required bool) error
 	CreateEnterpriseRuleset(ctx context.Context, slug string, payload any) error
+	// RemoveOutsideCollaborator is DESTRUCTIVE: it removes the user from all
+	// of the organization's repositories. Only destructive-gated rules may
+	// call it.
+	RemoveOutsideCollaborator(ctx context.Context, org, login string) error
 }
 
 // ErrReadOnly explains a remediation that could not run because the API has
@@ -123,5 +127,12 @@ func (c *Client) CreateEnterpriseCustomProperty(ctx context.Context, slug, name,
 // CreateEnterpriseRuleset creates an enterprise ruleset from a raw payload.
 func (c *Client) CreateEnterpriseRuleset(ctx context.Context, slug string, payload any) error {
 	_, err := c.rest(ctx, "POST", "/enterprises/"+slug+"/rulesets", payload, nil)
+	return err
+}
+
+// RemoveOutsideCollaborator removes an outside collaborator from all of the
+// organization's repositories. DESTRUCTIVE — callers must be gated.
+func (c *Client) RemoveOutsideCollaborator(ctx context.Context, org, login string) error {
+	_, err := c.rest(ctx, "DELETE", "/orgs/"+org+"/outside_collaborators/"+login, nil, nil)
 	return err
 }

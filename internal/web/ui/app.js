@@ -8,7 +8,6 @@
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
 
-  const ICON = { pass: "✓", fail: "✕", warn: "!", manual: "✎", waived: "~", error: "⚡", skipped: "–" };
   const STATUS_ORDER = ["fail", "warn", "manual", "waived", "error", "pass", "skipped"];
 
   const state = {

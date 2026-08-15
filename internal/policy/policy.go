@@ -10,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/ghe-wizard/ghe-wizard/internal/config"
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
 )
@@ -25,6 +26,16 @@ type Policy struct {
 		MaxEnterpriseOwners int `yaml:"max_enterprise_owners"`
 		StaleOrgDays        int `yaml:"stale_org_days"`
 	} `yaml:"thresholds"`
+	// Identity configures the identity rules (IDENT-*): corporate domains,
+	// outside-collaborator thresholds and pipeline data imports.
+	Identity struct {
+		ApprovedDomains               []string `yaml:"approved_domains"`
+		ForbidCorporateEmailOnMembers bool     `yaml:"forbid_corporate_email_on_members"`
+		MaxOutsideCollaborators       *int     `yaml:"max_outside_collaborators"` // nil = keep default (-1, not enforced)
+		AllowUsers                    []string `yaml:"allow_users"`
+		RosterCSV                     string   `yaml:"roster_csv"`
+		MailTraceCSV                  string   `yaml:"mail_trace_csv"`
+	} `yaml:"identity"`
 	// Waivers accept specific findings as known/accepted risks.
 	Waivers []Waiver `yaml:"waivers"`
 
@@ -102,6 +113,32 @@ func (p *Policy) ApplyThresholds(maxOwners, staleDays *int) {
 	}
 	if p.Thresholds.StaleOrgDays > 0 && staleDays != nil {
 		*staleDays = p.Thresholds.StaleOrgDays
+	}
+}
+
+// ApplyIdentity copies the policy's identity settings onto the runtime config
+// consumed by the IDENT-* rules. Unset values keep the config defaults.
+func (p *Policy) ApplyIdentity(ic *config.IdentityConfig) {
+	if ic == nil {
+		return
+	}
+	if len(p.Identity.ApprovedDomains) > 0 {
+		ic.ApprovedDomains = append([]string(nil), p.Identity.ApprovedDomains...)
+	}
+	if p.Identity.ForbidCorporateEmailOnMembers {
+		ic.ForbidCorporateEmailOnMembers = true
+	}
+	if p.Identity.MaxOutsideCollaborators != nil {
+		ic.MaxOutsideCollaborators = *p.Identity.MaxOutsideCollaborators
+	}
+	if len(p.Identity.AllowUsers) > 0 {
+		ic.AllowUsers = append([]string(nil), p.Identity.AllowUsers...)
+	}
+	if p.Identity.RosterCSV != "" {
+		ic.RosterCSV = p.Identity.RosterCSV
+	}
+	if p.Identity.MailTraceCSV != "" {
+		ic.MailTraceCSV = p.Identity.MailTraceCSV
 	}
 }
 

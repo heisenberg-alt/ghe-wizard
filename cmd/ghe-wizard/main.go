@@ -61,6 +61,8 @@ func main() {
 		err = cmdList(args)
 	case "history":
 		err = cmdHistory(args)
+	case "identity":
+		err = cmdIdentity(args)
 	case "explain", "ai-plan", "ask":
 		err = cmdAI(cmd, args)
 	case "version", "--version", "-v":
@@ -91,6 +93,7 @@ Commands:
   serve     Start the web dashboard
   list      List the best-practice rule catalog
   history   Show recorded assessment history (requires --db)
+  identity  Identity governance: 'warn' campaign & 'transport-rule' generator
   explain   AI: explain a finding (explain <RULE-ID>; needs GHE_AI_* env)
   ai-plan   AI: prioritized remediation plan (needs GHE_AI_* env)
   ask       AI: ask a question about the scorecard (needs GHE_AI_* env)
@@ -135,14 +138,7 @@ func buildEngine(enterprise, server, cfgPath string, preflight, demo bool) (*eng
 	if err != nil {
 		return nil, nil, err
 	}
-	// Detect GitHub Enterprise Server (best-effort) so cloud-only rules skip.
-	if cfg.BaseURL != "" && cfg.BaseURL != config.DefaultBaseURL {
-		if v, isGHES, merr := client.ServerMeta(context.Background()); merr == nil && isGHES {
-			cfg.TargetGHES = true
-			cfg.ServerVersion = v
-			fmt.Fprintf(os.Stderr, "Target: GitHub Enterprise Server %s (cloud-only rules will be skipped)\n", v)
-		}
-	}
+	detectGHES(client, cfg)
 	if preflight {
 		if cfg.Token == "" && cfg.HasAppAuth() {
 			// Installation tokens are not users and carry no OAuth scopes; a
@@ -165,6 +161,19 @@ func buildEngine(enterprise, server, cfgPath string, preflight, demo bool) (*eng
 		}
 	}
 	return engine.New(client, cfg), cfg, nil
+}
+
+// detectGHES probes /meta (best-effort) on non-cloud endpoints and marks the
+// config so cloud-only rules report skipped on GitHub Enterprise Server.
+func detectGHES(client *ghclient.Client, cfg *config.Config) {
+	if cfg.BaseURL == "" || cfg.BaseURL == config.DefaultBaseURL {
+		return
+	}
+	if v, isGHES, err := client.ServerMeta(context.Background()); err == nil && isGHES {
+		cfg.TargetGHES = true
+		cfg.ServerVersion = v
+		fmt.Fprintf(os.Stderr, "Target: GitHub Enterprise Server %s (cloud-only rules will be skipped)\n", v)
+	}
 }
 
 func cmdAssess(args []string) error {
@@ -254,6 +263,8 @@ func cmdApply(args []string) error {
 	ruleList := fs.String("rules", "", "comma-separated rule IDs (default: all failing remediable rules)")
 	dryRun := fs.Bool("dry-run", false, "describe changes without applying")
 	yes := fs.Bool("yes", false, "skip confirmation prompt")
+	allowDestructive := fs.Bool("allow-destructive", false,
+		"permit destructive remediations (remove people/access/seats); requires explicit --rules")
 	_ = fs.Parse(args)
 
 	a, err := buildAssessment(o)
@@ -266,7 +277,8 @@ func cmdApply(args []string) error {
 	var targets []rules.Rule
 	if *ruleList != "" {
 		// Explicit IDs: honor policy — skip rules that were disabled, filtered
-		// out by the profile, or waived, with a warning.
+		// out by the profile, or waived, with a warning. Destructive rules
+		// additionally require --allow-destructive.
 		statusByID := map[string]rules.Status{}
 		for _, res := range sc.Results {
 			statusByID[res.Meta.ID] = res.Status
@@ -283,12 +295,18 @@ func cmdApply(args []string) error {
 				fmt.Fprintf(os.Stderr, "warning: skipping %s: disabled by policy or excluded by profile\n", id)
 			case st == rules.StatusWaived:
 				fmt.Fprintf(os.Stderr, "warning: skipping %s: waived by policy\n", id)
+			case r.Meta().Destructive && !*allowDestructive:
+				fmt.Fprintf(os.Stderr, "warning: skipping %s: destructive remediation requires --allow-destructive\n", id)
 			default:
 				targets = append(targets, r)
 			}
 		}
 	} else {
+		// Bulk mode never includes destructive remediations, even with the flag.
 		targets = engine.RemediableFailures(sc)
+		if *allowDestructive {
+			fmt.Fprintln(os.Stderr, "note: --allow-destructive has no effect without an explicit --rules selection")
+		}
 	}
 	if len(targets) == 0 {
 		fmt.Println("nothing to remediate — no failing remediable rules.")
@@ -297,7 +315,11 @@ func cmdApply(args []string) error {
 
 	fmt.Println("The following rules will be remediated:")
 	for _, r := range targets {
-		fmt.Printf("  - %s %s\n", r.Meta().ID, r.Meta().Title)
+		mark := ""
+		if r.Meta().Destructive {
+			mark = "  [DESTRUCTIVE]"
+		}
+		fmt.Printf("  - %s %s%s\n", r.Meta().ID, r.Meta().Title, mark)
 	}
 	if !*dryRun && !*yes {
 		if !confirm(fmt.Sprintf("Apply changes to enterprise %q?", a.cfg.Enterprise)) {
@@ -350,6 +372,11 @@ func cmdWizard(args []string) error {
 			fmt.Println()
 			continue
 		}
+		if r.Meta().Destructive {
+			fmt.Printf("   (destructive remediation — run: ghe-wizard apply --rules %s --allow-destructive)\n", r.Meta().ID)
+			fmt.Println()
+			continue
+		}
 		if *yes || confirm("   Remediate this now?") {
 			rr := a.eng.Remediate(ctx, []rules.Rule{r}, *dryRun)
 			recorded = append(recorded, rr...)
@@ -398,13 +425,9 @@ func cmdServe(args []string) error {
 	}
 	// Detect GitHub Enterprise Server once at startup (best-effort) so
 	// per-request engines skip cloud-only rules.
-	if !*demo && cfg.Token != "" && cfg.BaseURL != config.DefaultBaseURL {
+	if !*demo && (cfg.Token != "" || cfg.HasAppAuth()) {
 		if client, cerr := ghclient.NewFromConfig(cfg); cerr == nil {
-			if v, isGHES, merr := client.ServerMeta(context.Background()); merr == nil && isGHES {
-				cfg.TargetGHES = true
-				cfg.ServerVersion = v
-				fmt.Fprintf(os.Stderr, "Target: GitHub Enterprise Server %s (cloud-only rules will be skipped)\n", v)
-			}
+			detectGHES(client, cfg)
 		}
 	}
 	pass := *basicPass
