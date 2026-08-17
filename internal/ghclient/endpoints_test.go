@@ -52,9 +52,13 @@ func TestWriteEndpoints_SendCorrectRequests(t *testing.T) {
 			"PATCH", "/orgs/org1",
 			[]string{`"web_commit_signoff_required":true`}},
 		{"enterprise workflow permissions",
-			func() error { return c.SetEnterpriseDefaultWorkflowPermissions(ctx, "acme", "read") },
+			func() error { return c.HardenEnterpriseWorkflowPermissions(ctx, "acme") },
 			"PUT", "/enterprises/acme/actions/permissions/workflow",
-			[]string{`"default_workflow_permissions":"read"`}},
+			[]string{`"default_workflow_permissions":"read"`, `"can_approve_pull_request_reviews":false`}},
+		{"private forking",
+			func() error { return c.SetOrgMembersCanForkPrivate(ctx, "org1", false) },
+			"PATCH", "/orgs/org1",
+			[]string{`"members_can_fork_private_repositories":false`}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

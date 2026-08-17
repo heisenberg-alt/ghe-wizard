@@ -4,6 +4,42 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-08-11
+
+Governance depth release: the teams domain becomes scored, code security
+configurations arrive as the flagship automated remedy, IDENT-02 gains its
+remediation, and the identity warning campaign can deliver via webhook and
+SMTP. Catalog: 45 rules across 10 domains.
+
+### Added
+- **Teams governance (TEAM domain is now scored, catalog 45 rules):**
+  TEAM-01 detects repositories granting access to direct collaborators
+  instead of teams (bounded sampling, disclosed in the finding); TEAM-02
+  checks IdP external-group availability for team sync; new TEAM-04 (empty
+  teams) and TEAM-05 (teams without maintainers).
+- **SEC-07 code security configurations (flagship remedy):** fails orgs with
+  no default security configuration and can create a "ghe-wizard
+  recommended" configuration (secret scanning + push protection, Dependabot
+  alerts + security updates, dependency graph, private vulnerability
+  reporting) and set it as default for all new repositories — GitHub's
+  supported successor to the per-flag org settings.
+- **ORG-06:** flags and remediates member forking of private repositories.
+- **POL-05 hardened:** now also checks and disables the workflow token's
+  ability to approve pull requests (same endpoint, one remediation).
+- **POL-06 remediable (explicit-opt-in gated):** restricts allowed actions to
+  GitHub-owned + verified creators + enterprise-local, preserving the
+  enabled-organizations scope. Build-impacting, so it never runs in bulk —
+  `apply --rules POL-06 --allow-destructive` only.
+- **IDENT-02 is now scored and remediable:** reads the notification-
+  restriction setting per org and can enable it (GraphQL field and mutation
+  verified against GitHub's published schema).
+- **Warning-campaign delivery:** `identity warn --webhook` posts a summary to
+  Slack/Teams/Discord/JSON webhooks; `--email` sends per-user warnings via
+  SMTP (`GHE_SMTP_HOST`, `GHE_SMTP_FROM`, optional `GHE_SMTP_USER/PASS`).
+- Pre-implementation endpoint verification: all GraphQL fields and REST
+  endpoints marked *(verify)* in the roadmap were checked against GitHub's
+  published schema and REST docs before implementation.
+
 ## [1.3.0] - 2026-08-11
 
 Governance release: a critical remediation fix, GitHub App authentication,
@@ -183,6 +219,7 @@ performance pass.
   Cloud, as an interactive CLI and an embedded web dashboard. Read-only
   assessment with a 0–100 scorecard and idempotent, dry-runnable remediations.
 
+[1.4.0]: https://github.com/heisenberg-alt/ghe-wizard/releases/tag/v1.4.0
 [1.3.0]: https://github.com/heisenberg-alt/ghe-wizard/releases/tag/v1.3.0
 [1.2.0]: https://github.com/heisenberg-alt/ghe-wizard/releases/tag/v1.2.0
 [1.1.0]: https://github.com/heisenberg-alt/ghe-wizard/releases/tag/v1.1.0

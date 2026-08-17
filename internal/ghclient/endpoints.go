@@ -50,20 +50,24 @@ func (c *Client) Enterprise(ctx context.Context, slug string) (*Enterprise, erro
 	// Enterprise Actions policies via REST (best-effort; recorded as
 	// capabilities when the endpoints are unavailable for the account).
 	var wf struct {
-		DefaultWorkflowPermissions string `json:"default_workflow_permissions"`
+		DefaultWorkflowPermissions   string `json:"default_workflow_permissions"`
+		CanApprovePullRequestReviews bool   `json:"can_approve_pull_request_reviews"`
 	}
 	if _, err := c.rest(ctx, "GET", "/enterprises/"+slug+"/actions/permissions/workflow", nil, &wf); err != nil {
 		ent.Capabilities["workflowPermissions"] = Capability{false, "default workflow permissions unavailable: " + err.Error()}
 	} else {
 		ent.DefaultWorkflowPermissions = wf.DefaultWorkflowPermissions
+		ent.CanApprovePRReviews = wf.CanApprovePullRequestReviews
 	}
 	var ap struct {
-		AllowedActions string `json:"allowed_actions"`
+		EnabledOrganizations string `json:"enabled_organizations"`
+		AllowedActions       string `json:"allowed_actions"`
 	}
 	if _, err := c.rest(ctx, "GET", "/enterprises/"+slug+"/actions/permissions", nil, &ap); err != nil {
 		ent.Capabilities["allowedActions"] = Capability{false, "allowed-actions policy unavailable: " + err.Error()}
 	} else {
 		ent.AllowedActions = ap.AllowedActions
+		ent.EnabledOrganizations = ap.EnabledOrganizations
 	}
 
 	// EMU detection is best-effort: EMU logins carry an enterprise short-code suffix.
@@ -177,6 +181,7 @@ func (c *Client) OrgSettings(ctx context.Context, org string) (*OrgSettings, err
 		TwoFactorRequirementEnabled               bool   `json:"two_factor_requirement_enabled"`
 		MembersCanCreateRepositories              bool   `json:"members_can_create_repositories"`
 		MembersCanCreatePublicRepositories        bool   `json:"members_can_create_public_repositories"`
+		MembersCanForkPrivateRepositories         bool   `json:"members_can_fork_private_repositories"`
 		WebCommitSignoffRequired                  bool   `json:"web_commit_signoff_required"`
 		SecretScanningEnabledForNewRepositories   bool   `json:"secret_scanning_enabled_for_new_repositories"`
 		SecretScanningPushProtectionEnabledForNew bool   `json:"secret_scanning_push_protection_enabled_for_new_repositories"`
@@ -193,6 +198,7 @@ func (c *Client) OrgSettings(ctx context.Context, org string) (*OrgSettings, err
 		TwoFactorRequired:           raw.TwoFactorRequirementEnabled,
 		MembersCanCreateRepos:       raw.MembersCanCreateRepositories,
 		MembersCanCreatePublicRepos: raw.MembersCanCreatePublicRepositories,
+		MembersCanForkPrivateRepos:  raw.MembersCanForkPrivateRepositories,
 		WebCommitSignoffRequired:    raw.WebCommitSignoffRequired,
 		SecretScanningEnabled:       raw.SecretScanningEnabledForNewRepositories,
 		SecretScanningPushProtect:   raw.SecretScanningPushProtectionEnabledForNew,

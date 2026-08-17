@@ -21,7 +21,12 @@ type DemoAPI struct {
 	publicRepo   map[string]bool   // org -> overridden members-can-create-public-repos
 	signoff      map[string]bool   // org -> overridden web-commit-signoff requirement
 	removedOC    map[string]bool   // "org/login" -> outside collaborator removed via remediation
+	notifOn      map[string]bool   // org -> overridden notification restriction
+	forkPriv     map[string]bool   // org -> overridden members-can-fork-private
+	csDefault    map[string]bool   // org -> code security default configured via remediation
 	workflowPerm string            // overridden enterprise default workflow permissions
+	wfHardened   bool              // workflow permissions hardened via remediation
+	allowedActs  string            // overridden enterprise allowed-actions policy
 	props        []CustomProperty  // custom properties added via remediation
 	rulesets     []Ruleset         // rulesets created via remediation
 }
@@ -36,6 +41,9 @@ func NewDemoAPI() *DemoAPI {
 		publicRepo: map[string]bool{},
 		signoff:    map[string]bool{},
 		removedOC:  map[string]bool{},
+		notifOn:    map[string]bool{},
+		forkPriv:   map[string]bool{},
+		csDefault:  map[string]bool{},
 	}
 }
 
@@ -46,7 +54,9 @@ func (d *DemoAPI) Enterprise(ctx context.Context, slug string) (*Enterprise, err
 		SAMLEnabled:                true,
 		IPAllowListEnabled:         false,
 		DefaultWorkflowPermissions: "write",
+		CanApprovePRReviews:        true,
 		AllowedActions:             "all",
+		EnabledOrganizations:       "all",
 		Capabilities: map[string]Capability{
 			"emu": {Determined: false, Reason: "EMU type not exposed via API; confirm manually"},
 		},
@@ -54,6 +64,12 @@ func (d *DemoAPI) Enterprise(ctx context.Context, slug string) (*Enterprise, err
 	d.mu.Lock()
 	if d.workflowPerm != "" {
 		ent.DefaultWorkflowPermissions = d.workflowPerm
+	}
+	if d.wfHardened {
+		ent.CanApprovePRReviews = false
+	}
+	if d.allowedActs != "" {
+		ent.AllowedActions = d.allowedActs
 	}
 	d.mu.Unlock()
 	return ent, nil
@@ -95,11 +111,13 @@ func (d *DemoAPI) OrgSettings(ctx context.Context, org string) (*OrgSettings, er
 			SecretScanningEnabled: true, SecretScanningPushProtect: true,
 			DependencyGraphEnabled: true, DependabotAlertsEnabled: true},
 		"acme-web": {Login: org, DefaultRepositoryPermission: "write",
-			MembersCanCreateRepos: true, MembersCanCreatePublicRepos: true},
+			MembersCanCreateRepos: true, MembersCanCreatePublicRepos: true,
+			MembersCanForkPrivateRepos: true},
 		"acme-labs": {Login: org, DefaultRepositoryPermission: "read",
 			MembersCanCreateRepos: true},
 		"acme-legacy": {Login: org, DefaultRepositoryPermission: "admin",
-			MembersCanCreateRepos: true, MembersCanCreatePublicRepos: true},
+			MembersCanCreateRepos: true, MembersCanCreatePublicRepos: true,
+			MembersCanForkPrivateRepos: true},
 	}
 	if s, ok := settings[org]; ok {
 		d.applyOverrides(s)
@@ -137,6 +155,9 @@ func (d *DemoAPI) applyOverrides(s *OrgSettings) {
 	}
 	if v, ok := d.signoff[s.Login]; ok {
 		s.WebCommitSignoffRequired = v
+	}
+	if v, ok := d.forkPriv[s.Login]; ok {
+		s.MembersCanForkPrivateRepos = v
 	}
 }
 
@@ -238,11 +259,68 @@ func (d *DemoAPI) SetOrgWebCommitSignoff(ctx context.Context, org string, requir
 	return nil
 }
 
-func (d *DemoAPI) SetEnterpriseDefaultWorkflowPermissions(ctx context.Context, slug, perm string) error {
+func (d *DemoAPI) HardenEnterpriseWorkflowPermissions(ctx context.Context, slug string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.workflowPerm = perm
+	d.workflowPerm = "read"
+	d.wfHardened = true
 	return nil
+}
+
+func (d *DemoAPI) SetEnterpriseAllowedActionsSelected(ctx context.Context, slug, enabledOrganizations string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.allowedActs = "selected"
+	return nil
+}
+
+func (d *DemoAPI) SetOrgMembersCanForkPrivate(ctx context.Context, org string, allowed bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.forkPriv[org] = allowed
+	return nil
+}
+
+func (d *DemoAPI) CreateOrgSecurityDefault(ctx context.Context, org string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.csDefault[org] = true
+	return nil
+}
+
+// --- GovAPI: synthetic org-governance data ----------------------------------
+
+func (d *DemoAPI) OrgTeams(ctx context.Context, org string) ([]Team, Capability, error) {
+	teams := map[string][]Team{
+		"acme-platform": {
+			{Slug: "platform-team", Name: "Platform Team", Members: 5, Maintainers: 2, Repos: 3},
+			{Slug: "old-guild", Name: "Old Guild", Members: 0, Maintainers: 0, Repos: 0},
+			{Slug: "docs-team", Name: "Docs Team", Members: 3, Maintainers: 0, Repos: 1},
+		},
+		"acme-payments": {
+			{Slug: "payments-core", Name: "Payments Core", Members: 8, Maintainers: 2, Repos: 4},
+		},
+	}
+	return teams[org], Capability{Determined: true}, nil
+}
+
+func (d *DemoAPI) RepoDirectCollaboratorCount(ctx context.Context, fullName string) (int, error) {
+	direct := map[string]int{
+		"acme-web/api":            2,
+		"acme-legacy/old-service": 1,
+	}
+	return direct[fullName], nil
+}
+
+func (d *DemoAPI) ExternalGroupCount(ctx context.Context, org string) (int, Capability, error) {
+	// No IdP groups linked anywhere -> TEAM-02 flags it.
+	return 0, Capability{Determined: true}, nil
+}
+
+func (d *DemoAPI) CodeSecurityDefaultConfigured(ctx context.Context, org string) (bool, Capability, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.csDefault[org], Capability{Determined: true}, nil
 }
 
 func (d *DemoAPI) RemoveOutsideCollaborator(ctx context.Context, org, login string) error {
@@ -311,6 +389,23 @@ func (d *DemoAPI) OutsideCollaborators(ctx context.Context, org string) ([]User,
 		}
 	}
 	return out, nil
+}
+
+func (d *DemoAPI) OrgNotificationRestriction(ctx context.Context, org string) (bool, Capability, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if v, ok := d.notifOn[org]; ok {
+		return v, Capability{Determined: true}, nil
+	}
+	// Only the payments org restricts notifications by default.
+	return org == "acme-payments", Capability{Determined: true}, nil
+}
+
+func (d *DemoAPI) SetOrgNotificationRestriction(ctx context.Context, org string, enabled bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.notifOn[org] = enabled
+	return nil
 }
 
 func (d *DemoAPI) SearchUsersByEmailDomain(ctx context.Context, domain string) ([]string, Capability, error) {

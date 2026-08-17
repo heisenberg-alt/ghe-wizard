@@ -210,13 +210,74 @@ func init() {
 	rules.Register(rules.Base{
 		M: rules.Meta{
 			ID: "IDENT-02", Domain: rules.DomainIdentity, Severity: rules.SeverityMedium,
-			Title:     "Restrict email notifications to approved domains",
-			Rationale: "Without the restriction, repository notifications flow to any email on a member's personal account, leaking activity outside the company.",
-			DocsURL:   docsBase + "/organizations/keeping-your-organization-secure/managing-security-settings-for-your-organization/restricting-email-notifications-for-your-organization",
+			Title:      "Restrict email notifications to approved domains",
+			Rationale:  "Without the restriction, repository notifications flow to any email on a member's personal account, leaking activity outside the company.",
+			DocsURL:    docsBase + "/organizations/keeping-your-organization-secure/managing-security-settings-for-your-organization/restricting-email-notifications-for-your-organization",
+			Remediable: true,
 		},
 		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
 			m := rules.ByID("IDENT-02").Meta()
-			return rules.Manual(m, "Confirm 'Restrict email notifications to approved or verified domains' is enabled for the enterprise and organizations (requires IDENT-01 approved domains).")
+			id, manual := identityFor(api, m)
+			if manual != nil {
+				return *manual
+			}
+			orgs, err := api.Organizations(ctx, cfg.Enterprise, cfg.MaxOrgs)
+			if err != nil {
+				return rules.Errored(m, err.Error())
+			}
+			var disabled []string
+			determined := 0
+			for _, o := range orgs {
+				on, capb, err := id.OrgNotificationRestriction(ctx, o.Login)
+				if err != nil || !capb.Determined {
+					continue
+				}
+				determined++
+				if !on {
+					disabled = append(disabled, o.Login)
+				}
+			}
+			if determined == 0 {
+				return rules.Manual(m, "Notification-restriction setting could not be read; confirm it is enabled in each organization (requires IDENT-01 approved domains).")
+			}
+			sort.Strings(disabled)
+			if len(disabled) > 0 {
+				return rules.Warn(m, fmt.Sprintf("%d organization(s) do not restrict email notifications to approved/verified domains.", len(disabled)), disabled)
+			}
+			return rules.Pass(m, fmt.Sprintf("Email notifications are domain-restricted in all %d scanned organizations.", determined), nil)
+		},
+		RemediateFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config, dryRun bool) rules.RemediationResult {
+			res := rules.RemediationResult{RuleID: "IDENT-02", DryRun: dryRun}
+			id, ok := ghclient.Identity(api)
+			if !ok {
+				res.Errors = append(res.Errors, "identity data unavailable with this client")
+				return res
+			}
+			orgs, err := api.Organizations(ctx, cfg.Enterprise, cfg.MaxOrgs)
+			if err != nil {
+				res.Errors = append(res.Errors, err.Error())
+				return res
+			}
+			client, wok := ghclient.Writer(api)
+			if !dryRun && !wok {
+				res.Errors = append(res.Errors, ghclient.ErrReadOnly)
+			}
+			for _, o := range orgs {
+				on, capb, err := id.OrgNotificationRestriction(ctx, o.Login)
+				if err != nil || !capb.Determined || on {
+					continue
+				}
+				res.Changes = append(res.Changes,
+					"restrict email notifications to approved/verified domains in "+o.Login+" (requires an approved domain — see IDENT-01)")
+				if !dryRun && wok {
+					if err := client.SetOrgNotificationRestriction(ctx, o.Login, true); err != nil {
+						res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", o.Login, err))
+					} else {
+						res.Applied = true
+					}
+				}
+			}
+			return res
 		},
 	})
 

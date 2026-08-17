@@ -41,6 +41,9 @@ type IdentityAPI interface {
 	OrgMemberVerifiedEmails(ctx context.Context, org string) ([]MemberIdentity, Capability, error)
 	SSOIdentities(ctx context.Context, slug string) ([]SSOIdentity, Capability, error)
 	OutsideCollaborators(ctx context.Context, org string) ([]User, error)
+	// OrgNotificationRestriction reports whether email notifications are
+	// restricted to approved/verified domains for the organization.
+	OrgNotificationRestriction(ctx context.Context, org string) (bool, Capability, error)
 	// SearchUsersByEmailDomain and SearchCommitAuthorsByDomain sweep PUBLIC
 	// signals only (profile emails, commit author emails). Coverage is
 	// partial by design; GitHub exposes no way to find accounts by private
@@ -208,6 +211,25 @@ func (c *Client) SSOIdentities(ctx context.Context, slug string) ([]SSOIdentity,
 		cursor = &ec
 	}
 	return ids, Capability{Determined: true}, nil
+}
+
+// OrgNotificationRestriction reads the organization's email-notification
+// restriction setting (verified against the public GraphQL schema:
+// Organization.notificationDeliveryRestrictionEnabledSetting).
+func (c *Client) OrgNotificationRestriction(ctx context.Context, org string) (bool, Capability, error) {
+	var q struct {
+		Organization struct {
+			Setting string `json:"notificationDeliveryRestrictionEnabledSetting"`
+		} `json:"organization"`
+	}
+	err := c.graphql(ctx, `
+		query($org:String!){
+		  organization(login:$org){ notificationDeliveryRestrictionEnabledSetting }
+		}`, map[string]any{"org": org}, &q)
+	if err != nil {
+		return false, Capability{Determined: false, Reason: "notification restriction unavailable for " + org + ": " + err.Error()}, nil
+	}
+	return q.Organization.Setting == "ENABLED", Capability{Determined: true}, nil
 }
 
 // OutsideCollaborators lists an org's outside collaborators.

@@ -14,8 +14,10 @@ import (
 	_ "github.com/ghe-wizard/ghe-wizard/internal/rules/catalog"
 )
 
-// fakeAPI implements ghclient.GHAPI plus ghclient.WriteAPI, recording every
-// write call so tests can assert remediations reach the write surface.
+// fakeAPI implements ghclient.GHAPI, ghclient.WriteAPI and ghclient.GovAPI,
+// recording every write call so tests can assert remediations reach the
+// write surface. (Identity reads live on identityFake to keep the base fake
+// identity-free for the gating tests.)
 type fakeAPI struct {
 	mu    sync.Mutex
 	calls []string
@@ -23,8 +25,14 @@ type fakeAPI struct {
 	ent         *ghclient.Enterprise
 	orgs        []ghclient.Organization
 	orgSettings map[string]*ghclient.OrgSettings
+	orgRepos    map[string][]ghclient.Repository
 	props       []ghclient.CustomProperty
 	rulesets    []ghclient.Ruleset
+
+	teams       map[string][]ghclient.Team
+	directCount map[string]int
+	extGroups   int
+	csDefault   map[string]bool
 }
 
 func (f *fakeAPI) record(format string, args ...any) {
@@ -69,7 +77,7 @@ func (f *fakeAPI) OrgSettings(ctx context.Context, org string) (*ghclient.OrgSet
 	return &ghclient.OrgSettings{Login: org}, nil
 }
 func (f *fakeAPI) OrgRepos(ctx context.Context, org string, limit int) ([]ghclient.Repository, error) {
-	return nil, nil
+	return f.orgRepos[org], nil
 }
 func (f *fakeAPI) EnterpriseCustomProperties(ctx context.Context, slug string) ([]ghclient.CustomProperty, error) {
 	return f.props, nil
@@ -85,6 +93,21 @@ func (f *fakeAPI) EnterpriseInstallations(ctx context.Context, slug string) ([]g
 }
 func (f *fakeAPI) CostCenters(ctx context.Context, slug string) ([]ghclient.CostCenter, ghclient.Capability, error) {
 	return nil, ghclient.Capability{Determined: false, Reason: "n/a"}, nil
+}
+
+// GovAPI implementation over the fixtures.
+
+func (f *fakeAPI) OrgTeams(ctx context.Context, org string) ([]ghclient.Team, ghclient.Capability, error) {
+	return f.teams[org], ghclient.Capability{Determined: true}, nil
+}
+func (f *fakeAPI) RepoDirectCollaboratorCount(ctx context.Context, fullName string) (int, error) {
+	return f.directCount[fullName], nil
+}
+func (f *fakeAPI) ExternalGroupCount(ctx context.Context, org string) (int, ghclient.Capability, error) {
+	return f.extGroups, ghclient.Capability{Determined: true}, nil
+}
+func (f *fakeAPI) CodeSecurityDefaultConfigured(ctx context.Context, org string) (bool, ghclient.Capability, error) {
+	return f.csDefault[org], ghclient.Capability{Determined: true}, nil
 }
 
 // WriteAPI implementation: record and succeed.
@@ -113,8 +136,20 @@ func (f *fakeAPI) SetOrgWebCommitSignoff(ctx context.Context, org string, requir
 	f.record("SetOrgWebCommitSignoff %s %v", org, required)
 	return nil
 }
-func (f *fakeAPI) SetEnterpriseDefaultWorkflowPermissions(ctx context.Context, slug, perm string) error {
-	f.record("SetEnterpriseDefaultWorkflowPermissions %s %s", slug, perm)
+func (f *fakeAPI) SetOrgMembersCanForkPrivate(ctx context.Context, org string, allowed bool) error {
+	f.record("SetOrgMembersCanForkPrivate %s %v", org, allowed)
+	return nil
+}
+func (f *fakeAPI) HardenEnterpriseWorkflowPermissions(ctx context.Context, slug string) error {
+	f.record("HardenEnterpriseWorkflowPermissions %s", slug)
+	return nil
+}
+func (f *fakeAPI) SetEnterpriseAllowedActionsSelected(ctx context.Context, slug, enabledOrganizations string) error {
+	f.record("SetEnterpriseAllowedActionsSelected %s %s", slug, enabledOrganizations)
+	return nil
+}
+func (f *fakeAPI) CreateOrgSecurityDefault(ctx context.Context, org string) error {
+	f.record("CreateOrgSecurityDefault %s", org)
 	return nil
 }
 func (f *fakeAPI) CreateEnterpriseCustomProperty(ctx context.Context, slug, name, valueType string, required bool) error {
@@ -129,6 +164,10 @@ func (f *fakeAPI) RemoveOutsideCollaborator(ctx context.Context, org, login stri
 	f.record("RemoveOutsideCollaborator %s %s", org, login)
 	return nil
 }
+func (f *fakeAPI) SetOrgNotificationRestriction(ctx context.Context, org string, enabled bool) error {
+	f.record("SetOrgNotificationRestriction %s %v", org, enabled)
+	return nil
+}
 
 // readOnlyAPI exposes only the read surface of a fakeAPI: embedding the GHAPI
 // interface promotes just its methods, so no WriteAPI and no Unwrap exist.
@@ -136,16 +175,19 @@ type readOnlyAPI struct{ ghclient.GHAPI }
 
 // failingFake returns fixtures where every remediable rule fails: permissive
 // base permission, no 2FA, no secret scanning, no Dependabot defaults, public
-// repo creation allowed, no web sign-off, writable workflow token, no custom
-// properties and no active rulesets.
+// repo creation and private forking allowed, no web sign-off, writable
+// workflow token that can approve PRs, all actions allowed, no code security
+// default, no custom properties and no active rulesets.
 func failingFake() *fakeAPI {
 	return &fakeAPI{
 		ent: &ghclient.Enterprise{Slug: "acme", DefaultWorkflowPermissions: "write",
+			CanApprovePRReviews: true, AllowedActions: "all", EnabledOrganizations: "all",
 			Capabilities: map[string]ghclient.Capability{}},
 		orgs: []ghclient.Organization{{Login: "acme-app", ID: 1}},
 		orgSettings: map[string]*ghclient.OrgSettings{
 			"acme-app": {Login: "acme-app", DefaultRepositoryPermission: "write",
-				MembersCanCreateRepos: true, MembersCanCreatePublicRepos: true},
+				MembersCanCreateRepos: true, MembersCanCreatePublicRepos: true,
+				MembersCanForkPrivateRepos: true},
 		},
 	}
 }
@@ -154,6 +196,7 @@ func failingFake() *fakeAPI {
 func compliantFake() *fakeAPI {
 	return &fakeAPI{
 		ent: &ghclient.Enterprise{Slug: "acme", DefaultWorkflowPermissions: "read",
+			AllowedActions: "selected", EnabledOrganizations: "all",
 			Capabilities: map[string]ghclient.Capability{}},
 		orgs: []ghclient.Organization{{Login: "acme-app", ID: 1}},
 		orgSettings: map[string]*ghclient.OrgSettings{
@@ -168,8 +211,9 @@ func compliantFake() *fakeAPI {
 				WebCommitSignoffRequired:    true,
 			},
 		},
-		props:    []ghclient.CustomProperty{{Name: "data-classification", ValueType: "single_select"}},
-		rulesets: []ghclient.Ruleset{{ID: 1, Name: "protect", Target: "branch", Enforcement: "active"}},
+		csDefault: map[string]bool{"acme-app": true},
+		props:     []ghclient.CustomProperty{{Name: "data-classification", ValueType: "single_select"}},
+		rulesets:  []ghclient.Ruleset{{ID: 1, Name: "protect", Target: "branch", Enforcement: "active"}},
 	}
 }
 
@@ -178,19 +222,23 @@ func testCfg() *config.Config {
 }
 
 // remediableCases pairs each remediable rule with the write call it must make.
+// (Identity rules are covered in identity_test.go with the identity fake.)
 var remediableCases = []struct {
 	id        string
 	wantWrite string
 }{
 	{"ORG-04", "SetOrgDefaultRepositoryPermission acme-app read"},
 	{"ORG-05", "SetOrgWebCommitSignoff acme-app true"},
+	{"ORG-06", "SetOrgMembersCanForkPrivate acme-app false"},
 	{"SEC-03", "SetOrgTwoFactorRequired acme-app true"},
 	{"SEC-05", "SetOrgSecretScanningDefaults acme-app true"},
 	{"SEC-06", "SetOrgDependabotDefaults acme-app"},
+	{"SEC-07", "CreateOrgSecurityDefault acme-app"},
 	{"REPO-02", "CreateEnterpriseCustomProperty acme data-classification"},
 	{"REPO-03", "SetOrgMembersCanCreatePublicRepos acme-app false"},
 	{"POL-02", "CreateEnterpriseRuleset acme"},
-	{"POL-05", "SetEnterpriseDefaultWorkflowPermissions acme read"},
+	{"POL-05", "HardenEnterpriseWorkflowPermissions acme"},
+	{"POL-06", "SetEnterpriseAllowedActionsSelected acme all"},
 }
 
 // TestRemediate_WritesThroughCachedWrapper is the regression test for the
@@ -239,7 +287,7 @@ func TestRemediate_DryRunDescribesWithoutWriting(t *testing.T) {
 
 func TestRemediate_CompliantStateMakesNoChanges(t *testing.T) {
 	// Remediations re-check state and skip compliant targets entirely.
-	for _, id := range []string{"ORG-04", "ORG-05", "SEC-03", "SEC-05", "SEC-06", "REPO-03", "POL-05"} {
+	for _, id := range []string{"ORG-04", "ORG-05", "ORG-06", "SEC-03", "SEC-05", "SEC-06", "SEC-07", "REPO-03", "POL-05", "POL-06"} {
 		t.Run(id, func(t *testing.T) {
 			api := compliantFake()
 			eng := engine.New(api, testCfg())

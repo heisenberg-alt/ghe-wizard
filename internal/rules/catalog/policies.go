@@ -141,12 +141,15 @@ func init() {
 			if err != nil {
 				return rules.Errored(m, err.Error())
 			}
-			switch ent.DefaultWorkflowPermissions {
-			case "read":
-				return rules.Pass(m, "Default workflow permissions are read-only.", nil)
-			case "write":
+			switch {
+			case ent.DefaultWorkflowPermissions == "write":
 				return rules.Fail(m, "Default workflow permissions are read and write.",
-					"Set the default GITHUB_TOKEN permissions to read-only at the enterprise level.", nil)
+					"Set the default GITHUB_TOKEN permissions to read-only and disable PR approval at the enterprise level.", nil)
+			case ent.DefaultWorkflowPermissions == "read" && ent.CanApprovePRReviews:
+				return rules.Fail(m, "The default token is read-only but may still approve pull requests.",
+					"Disable 'Allow GitHub Actions to create and approve pull requests' at the enterprise level.", nil)
+			case ent.DefaultWorkflowPermissions == "read":
+				return rules.Pass(m, "Default workflow permissions are read-only and PR approval is disabled.", nil)
 			default:
 				return rules.Manual(m, "Default workflow permission level could not be read. Verify it is set to read-only in Actions policies.")
 			}
@@ -158,14 +161,16 @@ func init() {
 				res.Errors = append(res.Errors, err.Error())
 				return res
 			}
-			if ent.DefaultWorkflowPermissions != "write" {
+			needsHardening := ent.DefaultWorkflowPermissions == "write" ||
+				(ent.DefaultWorkflowPermissions == "read" && ent.CanApprovePRReviews)
+			if !needsHardening {
 				return res // compliant or undetermined; nothing to change
 			}
 			res.Changes = append(res.Changes,
-				"set enterprise default GITHUB_TOKEN permissions write -> read (workflows that need write must declare 'permissions:')")
+				"harden enterprise workflow permissions: GITHUB_TOKEN read-only, PR approval by Actions disabled (workflows that need write must declare 'permissions:')")
 			if !dryRun {
 				if client, ok := ghclient.Writer(api); ok {
-					if err := client.SetEnterpriseDefaultWorkflowPermissions(ctx, cfg.Enterprise, "read"); err != nil {
+					if err := client.HardenEnterpriseWorkflowPermissions(ctx, cfg.Enterprise); err != nil {
 						res.Errors = append(res.Errors, err.Error())
 					} else {
 						res.Applied = true
@@ -185,6 +190,11 @@ func init() {
 			Title:     "Restrict which GitHub Actions can run",
 			Rationale: "Allowing any public action broadens supply-chain risk; prefer local actions or an allow-list of verified creators.",
 			DocsURL:   docsBase + "/admin/enforcing-policies/enforcing-policies-for-your-enterprise/enforcing-policies-for-github-actions-in-your-enterprise",
+			// BUILD-IMPACTING rather than access-removing, but the destructive
+			// gate gives exactly the right UX: never in bulk, explicit
+			// --rules POL-06 --allow-destructive only.
+			Remediable:  true,
+			Destructive: true,
 		},
 		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
 			m := rules.ByID("POL-06").Meta()
@@ -200,6 +210,31 @@ func init() {
 			default:
 				return rules.Pass(m, fmt.Sprintf("Actions are restricted (policy: %s).", ent.AllowedActions), nil)
 			}
+		},
+		RemediateFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config, dryRun bool) rules.RemediationResult {
+			res := rules.RemediationResult{RuleID: "POL-06", DryRun: dryRun}
+			ent, err := api.Enterprise(ctx, cfg.Enterprise)
+			if err != nil {
+				res.Errors = append(res.Errors, err.Error())
+				return res
+			}
+			if ent.AllowedActions != "all" {
+				return res // already restricted or undetermined
+			}
+			res.Changes = append(res.Changes,
+				"restrict enterprise allowed actions to GitHub-owned + verified creators + enterprise-local (BUILD-IMPACTING: other third-party actions stop running until allow-listed)")
+			if !dryRun {
+				if client, ok := ghclient.Writer(api); ok {
+					if err := client.SetEnterpriseAllowedActionsSelected(ctx, cfg.Enterprise, ent.EnabledOrganizations); err != nil {
+						res.Errors = append(res.Errors, err.Error())
+					} else {
+						res.Applied = true
+					}
+				} else {
+					res.Errors = append(res.Errors, ghclient.ErrReadOnly)
+				}
+			}
+			return res
 		},
 	})
 }

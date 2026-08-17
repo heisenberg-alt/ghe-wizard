@@ -212,6 +212,65 @@ func init() {
 			return res
 		},
 	})
+
+	// ORG-06: Members cannot fork private/internal repositories.
+	rules.Register(rules.Base{
+		M: rules.Meta{
+			ID: "ORG-06", Domain: rules.DomainOrgs, Severity: rules.SeverityMedium,
+			Title:      "Disable forking of private repositories",
+			Rationale:  "Private forks copy sensitive code outside the governed repository, surviving access revocation and complicating leak response.",
+			DocsURL:    docsBase + "/organizations/managing-organization-settings/managing-the-forking-policy-for-your-organization",
+			Remediable: true,
+		},
+		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
+			m := rules.ByID("ORG-06").Meta()
+			orgs, err := api.Organizations(ctx, cfg.Enterprise, cfg.MaxOrgs)
+			if err != nil {
+				return rules.Errored(m, err.Error())
+			}
+			var open []string
+			for _, o := range orgs {
+				s, err := api.OrgSettings(ctx, o.Login)
+				if err != nil {
+					continue
+				}
+				if s.MembersCanForkPrivateRepos {
+					open = append(open, o.Login)
+				}
+			}
+			if len(open) > 0 {
+				return rules.Warn(m, fmt.Sprintf("%d organization(s) allow members to fork private repositories.", len(open)), open)
+			}
+			return rules.Pass(m, "Private-repository forking is disabled in scanned organizations.", nil)
+		},
+		RemediateFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config, dryRun bool) rules.RemediationResult {
+			res := rules.RemediationResult{RuleID: "ORG-06", DryRun: dryRun}
+			orgs, err := api.Organizations(ctx, cfg.Enterprise, cfg.MaxOrgs)
+			if err != nil {
+				res.Errors = append(res.Errors, err.Error())
+				return res
+			}
+			client, ok := ghclient.Writer(api)
+			if !dryRun && !ok {
+				res.Errors = append(res.Errors, ghclient.ErrReadOnly)
+			}
+			for _, o := range orgs {
+				s, err := api.OrgSettings(ctx, o.Login)
+				if err != nil || !s.MembersCanForkPrivateRepos {
+					continue
+				}
+				res.Changes = append(res.Changes, "disable private-repository forking in "+o.Login)
+				if !dryRun && ok {
+					if err := client.SetOrgMembersCanForkPrivate(ctx, o.Login, false); err != nil {
+						res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", o.Login, err))
+					} else {
+						res.Applied = true
+					}
+				}
+			}
+			return res
+		},
+	})
 }
 
 func orgNames(orgs []ghclient.Organization) []string {

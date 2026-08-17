@@ -29,6 +29,12 @@ type Cached struct {
 	sso       *cacheEntry[ssoResult]
 	memberIDs map[string]*cacheEntry[membersResult]
 	oc        map[string]*cacheEntry[[]User]
+	notif     map[string]*cacheEntry[boolResult]
+
+	// Org-governance reads (see GovAPI).
+	teams     map[string]*cacheEntry[teamsResult]
+	extGroups map[string]*cacheEntry[countResult]
+	csDefault map[string]*cacheEntry[boolResult]
 }
 
 type cacheEntry[T any] struct {
@@ -288,6 +294,35 @@ func (c *Cached) OutsideCollaborators(ctx context.Context, org string) ([]User, 
 	return e.val, e.err
 }
 
+type boolResult struct {
+	v    bool
+	capb Capability
+}
+
+// OrgNotificationRestriction memoizes per org.
+func (c *Cached) OrgNotificationRestriction(ctx context.Context, org string) (bool, Capability, error) {
+	inner, ok := Identity(c.inner)
+	if !ok {
+		return false, Capability{Determined: false, Reason: identityUnavailable}, nil
+	}
+	c.mu.Lock()
+	if c.notif == nil {
+		c.notif = map[string]*cacheEntry[boolResult]{}
+	}
+	e := c.notif[org]
+	if e == nil {
+		e = &cacheEntry[boolResult]{}
+		c.notif[org] = e
+	}
+	c.mu.Unlock()
+	e.once.Do(func() {
+		var r boolResult
+		r.v, r.capb, e.err = inner.OrgNotificationRestriction(ctx, org)
+		e.val = r
+	})
+	return e.val.v, e.val.capb, e.err
+}
+
 // SearchUsersByEmailDomain passes through (one caller per assessment).
 func (c *Cached) SearchUsersByEmailDomain(ctx context.Context, domain string) ([]string, Capability, error) {
 	inner, ok := Identity(c.inner)
@@ -304,4 +339,99 @@ func (c *Cached) SearchCommitAuthorsByDomain(ctx context.Context, domain string)
 		return nil, Capability{Determined: false, Reason: identityUnavailable}, nil
 	}
 	return inner.SearchCommitAuthorsByDomain(ctx, domain)
+}
+
+// --- GovAPI: memoized org-governance reads ----------------------------------
+
+const govUnavailable = "org governance data source unavailable with this client"
+
+type teamsResult struct {
+	v    []Team
+	capb Capability
+}
+
+type countResult struct {
+	v    int
+	capb Capability
+}
+
+// OrgTeams memoizes per org.
+func (c *Cached) OrgTeams(ctx context.Context, org string) ([]Team, Capability, error) {
+	inner, ok := Gov(c.inner)
+	if !ok {
+		return nil, Capability{Determined: false, Reason: govUnavailable}, nil
+	}
+	c.mu.Lock()
+	if c.teams == nil {
+		c.teams = map[string]*cacheEntry[teamsResult]{}
+	}
+	e := c.teams[org]
+	if e == nil {
+		e = &cacheEntry[teamsResult]{}
+		c.teams[org] = e
+	}
+	c.mu.Unlock()
+	e.once.Do(func() {
+		var r teamsResult
+		r.v, r.capb, e.err = inner.OrgTeams(ctx, org)
+		e.val = r
+	})
+	return e.val.v, e.val.capb, e.err
+}
+
+// RepoDirectCollaboratorCount passes through (rules sample a bounded set).
+func (c *Cached) RepoDirectCollaboratorCount(ctx context.Context, fullName string) (int, error) {
+	inner, ok := Gov(c.inner)
+	if !ok {
+		return 0, errors.New(govUnavailable)
+	}
+	return inner.RepoDirectCollaboratorCount(ctx, fullName)
+}
+
+// ExternalGroupCount memoizes per org.
+func (c *Cached) ExternalGroupCount(ctx context.Context, org string) (int, Capability, error) {
+	inner, ok := Gov(c.inner)
+	if !ok {
+		return 0, Capability{Determined: false, Reason: govUnavailable}, nil
+	}
+	c.mu.Lock()
+	if c.extGroups == nil {
+		c.extGroups = map[string]*cacheEntry[countResult]{}
+	}
+	e := c.extGroups[org]
+	if e == nil {
+		e = &cacheEntry[countResult]{}
+		c.extGroups[org] = e
+	}
+	c.mu.Unlock()
+	e.once.Do(func() {
+		var r countResult
+		r.v, r.capb, e.err = inner.ExternalGroupCount(ctx, org)
+		e.val = r
+	})
+	return e.val.v, e.val.capb, e.err
+}
+
+// CodeSecurityDefaultConfigured memoizes per org.
+func (c *Cached) CodeSecurityDefaultConfigured(ctx context.Context, org string) (bool, Capability, error) {
+	inner, ok := Gov(c.inner)
+	if !ok {
+		return false, Capability{Determined: false, Reason: govUnavailable}, nil
+	}
+	c.mu.Lock()
+	if c.csDefault == nil {
+		c.csDefault = map[string]*cacheEntry[boolResult]{}
+	}
+	e := c.csDefault[org]
+	if e == nil {
+		e = &cacheEntry[boolResult]{}
+		c.csDefault[org] = e
+	}
+	c.mu.Unlock()
+	e.once.Do(func() {
+		var r boolResult
+		r.v, r.capb, e.err = inner.CodeSecurityDefaultConfigured(ctx, org)
+		e.val = r
+	})
+	return e.val.v, e.val.capb, e.err
 }

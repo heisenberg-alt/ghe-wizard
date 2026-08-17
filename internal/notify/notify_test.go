@@ -320,6 +320,42 @@ func TestTruncateIsRuneSafe(t *testing.T) {
 	}
 }
 
+func TestMessageWrapsPerPlatform(t *testing.T) {
+	var raw map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw = map[string]any{}
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cases := []struct{ format, wantKey string }{
+		{"slack", "text"},
+		{"discord", "content"},
+		{"teams", "@type"},
+		{"json", "message"},
+		{"auto", "text"}, // plain URL auto-detects as Slack
+	}
+	for _, tc := range cases {
+		t.Run(tc.format, func(t *testing.T) {
+			if err := Message(context.Background(), tc.format, ts.URL, "campaign summary\nline two"); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := raw[tc.wantKey]; !ok {
+				t.Fatalf("format %s: payload missing key %q: %v", tc.format, tc.wantKey, raw)
+			}
+		})
+	}
+	if err := Message(context.Background(), "fax", ts.URL, "x"); err == nil {
+		t.Fatal("unknown format should error")
+	}
+	if err := Message(context.Background(), "slack", "", "x"); err == nil {
+		t.Fatal("empty URL should error")
+	}
+}
+
 func assertJSONPost(t *testing.T, r *http.Request) {
 	t.Helper()
 	if r.Method != http.MethodPost {

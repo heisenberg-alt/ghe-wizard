@@ -4,12 +4,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/mail"
+	"net/smtp"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
+	"github.com/ghe-wizard/ghe-wizard/internal/notify"
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
 )
 
@@ -49,6 +52,9 @@ func cmdIdentityWarn(args []string) error {
 	graceDays := fs.Int("grace-days", 14, "days until the stated deadline")
 	format := fs.String("format", "csv", "output format: csv|md")
 	out := fs.String("out", "", "write the campaign to a file instead of stdout")
+	webhook := fs.String("webhook", "", "post a campaign summary to this chat webhook (Slack/Teams/Discord/JSON)")
+	webhookFormat := fs.String("webhook-format", "auto", "webhook payload format: auto|slack|teams|discord|json")
+	email := fs.Bool("email", false, "send per-user warning emails via SMTP (GHE_SMTP_HOST host:port, GHE_SMTP_FROM; optional GHE_SMTP_USER/GHE_SMTP_PASS)")
 	_ = fs.Parse(args)
 
 	a, err := buildAssessment(o)
@@ -77,6 +83,12 @@ func cmdIdentityWarn(args []string) error {
 		fmt.Println(" rogue and departed detection need approved domains, and optionally roster/mail-trace imports.)")
 		return nil
 	}
+	counts := map[string]int{}
+	for _, t := range targets {
+		counts[t.Population]++
+	}
+	summary := fmt.Sprintf("ghe-wizard identity campaign for %s: %d target(s) — members=%d, rogue-public=%d, rogue-confirmed=%d, departed=%d. Deadline %s.",
+		sc.Enterprise, len(targets), counts["member"], counts["rogue-public-signal"], counts["rogue-confirmed-signup"], counts["departed"], deadline)
 
 	var data string
 	switch *format {
@@ -95,14 +107,99 @@ func cmdIdentityWarn(args []string) error {
 	} else {
 		fmt.Print(data)
 	}
-	counts := map[string]int{}
-	for _, t := range targets {
-		counts[t.Population]++
+
+	if *webhook != "" {
+		if nerr := notify.Message(ctx, *webhookFormat, *webhook, summary); nerr != nil {
+			fmt.Fprintln(os.Stderr, "warning: webhook summary failed:", nerr)
+		} else {
+			fmt.Fprintln(os.Stderr, "webhook summary posted")
+		}
 	}
-	fmt.Fprintf(os.Stderr, "campaign: %d target(s) — members=%d rogue-public=%d rogue-confirmed=%d departed=%d; deadline %s\n",
-		len(targets), counts["member"], counts["rogue-public-signal"], counts["rogue-confirmed-signup"], counts["departed"], deadline)
+	if *email {
+		sent, skipped, serr := sendCampaignEmails(targets)
+		if serr != nil {
+			fmt.Fprintln(os.Stderr, "warning: email campaign stopped:", serr)
+		}
+		fmt.Fprintf(os.Stderr, "emails: %d sent, %d skipped (no known corporate mailbox)\n", sent, skipped)
+	}
+	fmt.Fprintln(os.Stderr, summary)
 	fmt.Fprintln(os.Stderr, "track compliance by re-running: ghe-wizard assess --db <file> (drift shows remediated findings)")
 	return nil
+}
+
+// emailAddressFor returns the target's corporate mailbox when one is known
+// and parses as a valid address (imported CSV values are untrusted).
+func emailAddressFor(t warnTarget) string {
+	candidate := ""
+	if strings.Contains(t.Identifier, "@") && !strings.Contains(t.Identifier, " ") {
+		candidate = t.Identifier
+	} else if t.Emails != "" {
+		candidate = strings.Fields(t.Emails)[0]
+	}
+	if candidate == "" {
+		return ""
+	}
+	addr, err := mail.ParseAddress(candidate)
+	if err != nil {
+		return ""
+	}
+	return addr.Address
+}
+
+// sendCampaignEmails delivers one warning email per target with a known
+// corporate mailbox, via plain SMTP (stdlib; STARTTLS when the server
+// supports it). It stops on the first send error so a bad relay does not
+// half-spam the company.
+func sendCampaignEmails(targets []warnTarget) (sent, skipped int, err error) {
+	host := os.Getenv("GHE_SMTP_HOST") // host:port
+	from := os.Getenv("GHE_SMTP_FROM")
+	if host == "" || from == "" {
+		return 0, 0, fmt.Errorf("set GHE_SMTP_HOST (host:port) and GHE_SMTP_FROM to send email")
+	}
+	fromAddr, ferr := mail.ParseAddress(from)
+	if ferr != nil {
+		return 0, 0, fmt.Errorf("GHE_SMTP_FROM is not a valid address: %w", ferr)
+	}
+	var auth smtp.Auth
+	if u := os.Getenv("GHE_SMTP_USER"); u != "" {
+		hostname := host
+		if i := strings.IndexByte(host, ':'); i > 0 {
+			hostname = host[:i]
+		}
+		auth = smtp.PlainAuth("", u, os.Getenv("GHE_SMTP_PASS"), hostname)
+	}
+	for _, t := range targets {
+		to := emailAddressFor(t)
+		if to == "" {
+			skipped++
+			continue
+		}
+		// Addresses are validated via mail.ParseAddress above and every
+		// header value is CR/LF-stripped in buildWarnEmail, so imported CSV
+		// values cannot inject SMTP commands or headers.
+		msg := buildWarnEmail(fromAddr.Address, to, t)
+		if serr := smtp.SendMail(host, auth, fromAddr.Address, []string{to}, msg); serr != nil { // #nosec G707 -- to/from parsed with mail.ParseAddress; headers sanitized
+			return sent, skipped, fmt.Errorf("send to %s: %w", to, serr)
+		}
+		sent++
+	}
+	return sent, skipped, nil
+}
+
+// headerSafe strips CR/LF so untrusted values cannot inject SMTP headers.
+func headerSafe(s string) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	return strings.ReplaceAll(s, "\n", " ")
+}
+
+// buildWarnEmail composes the per-user plain-text warning message.
+func buildWarnEmail(from, to string, t warnTarget) []byte {
+	subject := headerSafe("Action required: corporate email on a personal GitHub account (deadline " + t.Deadline + ")")
+	body := fmt.Sprintf(
+		"Hello,\r\n\r\nOur GitHub governance scan (%s) flagged: %s\r\n\r\nRequired action by %s:\r\n%s\r\n\r\nQuestions? Reply to this address.\r\n",
+		headerSafe(t.SourceRule), headerSafe(t.Identifier), headerSafe(t.Deadline), headerSafe(t.Action))
+	return []byte("From: " + headerSafe(from) + "\r\nTo: " + headerSafe(to) + "\r\nSubject: " + subject +
+		"\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + body)
 }
 
 // collectWarnTargets extracts per-principal campaign rows from the identity

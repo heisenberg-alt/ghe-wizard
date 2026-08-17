@@ -79,6 +79,35 @@ func TestWarnOutputsRenderAllTargets(t *testing.T) {
 	}
 }
 
+func TestEmailComposition(t *testing.T) {
+	member := warnTarget{Population: "member", Identifier: "alice", Emails: "alice@acme.com b@acme.com",
+		SourceRule: "IDENT-07", Deadline: "2026-09-01", Action: "Remove the corporate email."}
+	if got := emailAddressFor(member); got != "alice@acme.com" {
+		t.Fatalf("member address = %q, want alice@acme.com", got)
+	}
+	confirmed := warnTarget{Population: "rogue-confirmed-signup", Identifier: "ghost@acme.com", Emails: "ghost@acme.com"}
+	if got := emailAddressFor(confirmed); got != "ghost@acme.com" {
+		t.Fatalf("confirmed address = %q", got)
+	}
+	if got := emailAddressFor(warnTarget{Identifier: "rogue-1"}); got != "" {
+		t.Fatalf("public rogue has no mailbox, got %q", got)
+	}
+	if got := emailAddressFor(warnTarget{Identifier: "gone-dev (gone-dev@acme.com)"}); got != "" {
+		t.Fatalf("departed label is not a mailbox, got %q", got)
+	}
+
+	msg := string(buildWarnEmail("gov@acme.com", "alice@acme.com", member))
+	for _, want := range []string{
+		"From: gov@acme.com", "To: alice@acme.com",
+		"Subject: Action required", "deadline 2026-09-01",
+		"IDENT-07", "Remove the corporate email.",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("email missing %q:\n%s", want, msg)
+		}
+	}
+}
+
 func TestTransportRuleScript(t *testing.T) {
 	script := transportRuleScript("acme.com", []string{"oss-liaison@acme.com"})
 	for _, want := range []string{

@@ -254,4 +254,79 @@ func init() {
 			return res
 		},
 	})
+
+	// SEC-07: A code security configuration is the org default.
+	rules.Register(rules.Base{
+		M: rules.Meta{
+			ID: "SEC-07", Domain: rules.DomainSecurity, Severity: rules.SeverityHigh,
+			Title:      "Set a code security configuration as the default",
+			Rationale:  "Code security configurations are GitHub's supported way to apply and enforce security defaults (secret scanning, Dependabot, private vulnerability reporting) consistently; per-flag org settings are being superseded by them.",
+			DocsURL:    docsBase + "/code-security/securing-your-organization/enabling-security-features-in-your-organization/creating-a-custom-security-configuration",
+			Remediable: true,
+		},
+		AssessFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config) rules.Result {
+			m := rules.ByID("SEC-07").Meta()
+			gov, ok := ghclient.Gov(api)
+			if !ok {
+				return rules.Manual(m, "Code security configuration data is unavailable with this client.")
+			}
+			orgs, err := api.Organizations(ctx, cfg.Enterprise, cfg.MaxOrgs)
+			if err != nil {
+				return rules.Errored(m, err.Error())
+			}
+			var missing []string
+			determined := 0
+			for _, o := range orgs {
+				configured, capb, err := gov.CodeSecurityDefaultConfigured(ctx, o.Login)
+				if err != nil || !capb.Determined {
+					continue
+				}
+				determined++
+				if !configured {
+					missing = append(missing, o.Login)
+				}
+			}
+			if determined == 0 {
+				return rules.Manual(m, "Code security configurations could not be read for any organization; verify a default configuration exists.")
+			}
+			if len(missing) > 0 {
+				return rules.Fail(m, fmt.Sprintf("%d organization(s) have no code security configuration set as default for new repositories.", len(missing)),
+					"Create a security configuration (secret scanning + push protection, Dependabot, private vulnerability reporting) and set it as the default.", missing)
+			}
+			return rules.Pass(m, fmt.Sprintf("A default code security configuration is set in all %d scanned organizations.", determined), nil)
+		},
+		RemediateFn: func(ctx context.Context, api ghclient.GHAPI, cfg *config.Config, dryRun bool) rules.RemediationResult {
+			res := rules.RemediationResult{RuleID: "SEC-07", DryRun: dryRun}
+			client, wok := ghclient.Writer(api)
+			if !dryRun && !wok {
+				res.Errors = append(res.Errors, ghclient.ErrReadOnly)
+			}
+			gov, ok := ghclient.Gov(api)
+			if !ok {
+				res.Errors = append(res.Errors, "code security configuration data unavailable with this client")
+				return res
+			}
+			orgs, err := api.Organizations(ctx, cfg.Enterprise, cfg.MaxOrgs)
+			if err != nil {
+				res.Errors = append(res.Errors, err.Error())
+				return res
+			}
+			for _, o := range orgs {
+				configured, capb, err := gov.CodeSecurityDefaultConfigured(ctx, o.Login)
+				if err != nil || !capb.Determined || configured {
+					continue
+				}
+				res.Changes = append(res.Changes,
+					"create 'ghe-wizard recommended' code security configuration and set it as default for new repos in "+o.Login)
+				if !dryRun && wok {
+					if err := client.CreateOrgSecurityDefault(ctx, o.Login); err != nil {
+						res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", o.Login, err))
+					} else {
+						res.Applied = true
+					}
+				}
+			}
+			return res
+		},
+	})
 }

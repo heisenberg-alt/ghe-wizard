@@ -49,9 +49,15 @@ type Enterprise struct {
 	EMU bool
 	// DefaultWorkflowPermissions is "read" or "write" when known.
 	DefaultWorkflowPermissions string
+	// CanApprovePRReviews reflects whether the default workflow token may
+	// approve pull requests (Actions workflow-permissions endpoint).
+	CanApprovePRReviews bool
 	// AllowedActions is the enterprise Actions policy ("all", "local_only",
 	// "selected") when known.
 	AllowedActions string
+	// EnabledOrganizations is the Actions policy scope ("all", "none",
+	// "selected") when known; remediations preserve it.
+	EnabledOrganizations string
 	// IPAllowListEnabled reflects the enterprise IP allow list policy.
 	IPAllowListEnabled bool
 	Capabilities       map[string]Capability
@@ -74,6 +80,7 @@ type OrgSettings struct {
 	TwoFactorRequired           bool
 	MembersCanCreateRepos       bool
 	MembersCanCreatePublicRepos bool
+	MembersCanForkPrivateRepos  bool
 	WebCommitSignoffRequired    bool
 	SecretScanningEnabled       bool
 	SecretScanningPushProtect   bool

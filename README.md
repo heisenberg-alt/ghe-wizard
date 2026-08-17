@@ -27,16 +27,16 @@ documentation.
 > enterprise so you can explore the scorecard and remediation flow instantly.
 
 
-## What it checks (41 rules, 10 domains)
+## What it checks (45 rules, 10 domains)
 
 | Domain | Examples |
 |---|---|
 | Enterprise foundations | limit enterprise owners, least-privilege custom roles |
-| Organizations | intentional org creation, stale-org cleanup, least-privilege base permission, web commit sign-off |
-| Teams | manage access via teams, IdP sync, restrict membership control |
+| Organizations | intentional org creation, stale-org cleanup, least-privilege base permission, web commit sign-off, private-fork policy |
+| Teams | team-based access (direct-collaborator detection), IdP group sync, empty/maintainer-less team hygiene |
 | Repositories | org-owned collaboration, custom properties, repo-creation controls |
-| Policies | branch rulesets, IP allow list, Copilot policies, read-only workflow token, allowed-actions policy |
-| Security | enterprise SSO, SCIM, 2FA, audit-log streaming, secret scanning, Dependabot alerts |
+| Policies | branch rulesets, IP allow list, Copilot policies, hardened workflow token, allowed-actions policy |
+| Security | enterprise SSO, SCIM, 2FA, audit-log streaming, secret scanning, Dependabot alerts, code security configurations |
 | Identity | verified/approved domains, corporate email on personal accounts, outside collaborators, SSO linkage, offboarding & signup-trace cross-checks |
 | Innersource | internal-visibility repos for discovery & reuse |
 | Automation | GitHub Apps over PATs, automated provisioning |

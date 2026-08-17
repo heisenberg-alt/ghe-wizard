@@ -22,6 +22,7 @@ type identityFake struct {
 	members       map[string][]ghclient.MemberIdentity
 	sso           []ghclient.SSOIdentity
 	outside       map[string][]ghclient.User
+	notifOn       map[string]bool
 	searchUsers   []string
 	searchCommits []string
 }
@@ -37,6 +38,9 @@ func (f *identityFake) SSOIdentities(ctx context.Context, slug string) ([]ghclie
 }
 func (f *identityFake) OutsideCollaborators(ctx context.Context, org string) ([]ghclient.User, error) {
 	return f.outside[org], nil
+}
+func (f *identityFake) OrgNotificationRestriction(ctx context.Context, org string) (bool, ghclient.Capability, error) {
+	return f.notifOn[org], ghclient.Capability{Determined: true}, nil
 }
 func (f *identityFake) SearchUsersByEmailDomain(ctx context.Context, domain string) ([]string, ghclient.Capability, error) {
 	return f.searchUsers, ghclient.Capability{Determined: true}, nil
@@ -151,6 +155,27 @@ func TestIdentity03_SkipsUnderForbidPosture(t *testing.T) {
 	}
 	if list, _ := res.Evidence.([]string); len(list) != 1 || list[0] != "bob" {
 		t.Fatalf("evidence should be [bob], got %#v", res.Evidence)
+	}
+}
+
+func TestIdentity02_NotificationRestriction(t *testing.T) {
+	f := newIdentityFake() // restriction off for acme-app by default
+	cfg := identityCfg()
+	res := assessOne(t, f, cfg, "IDENT-02")
+	if res.Status != rules.StatusWarn {
+		t.Fatalf("restriction disabled should warn, got %s (%s)", res.Status, res.Detail)
+	}
+	if list, _ := res.Evidence.([]string); len(list) != 1 || list[0] != "acme-app" {
+		t.Fatalf("evidence should be [acme-app], got %#v", res.Evidence)
+	}
+	eng := engine.New(f, cfg)
+	rr := eng.Remediate(context.Background(), []rules.Rule{rules.ByID("IDENT-02")}, false)
+	if !rr[0].Applied || !f.hasCall("SetOrgNotificationRestriction acme-app true") {
+		t.Fatalf("remediation should enable the restriction, got %+v calls=%v", rr[0], f.calls)
+	}
+	f.notifOn = map[string]bool{"acme-app": true}
+	if res := assessOne(t, f, cfg, "IDENT-02"); res.Status != rules.StatusPass {
+		t.Fatalf("restriction enabled should pass, got %s", res.Status)
 	}
 }
 

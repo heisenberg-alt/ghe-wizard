@@ -41,6 +41,49 @@ func Send(ctx context.Context, webhookURL string, sc *engine.Scorecard, drift *s
 	}
 }
 
+// Message posts a short free-form text (e.g. a campaign summary) to a chat
+// webhook, wrapped in the platform's envelope. Format: auto (detect from the
+// URL), slack, teams, discord, or json.
+func Message(ctx context.Context, format, webhookURL, text string) error {
+	if strings.TrimSpace(webhookURL) == "" {
+		return errors.New("notify: webhook URL is required")
+	}
+	f := strings.ToLower(strings.TrimSpace(format))
+	if f == "" || f == "auto" {
+		switch {
+		case isTeamsWebhook(webhookURL):
+			f = "teams"
+		case isDiscordWebhook(webhookURL):
+			f = "discord"
+		default:
+			f = "slack"
+		}
+	}
+	switch f {
+	case "slack":
+		return postJSON(ctx, webhookURL, map[string]string{"text": text})
+	case "discord":
+		return postJSON(ctx, webhookURL, map[string]string{"content": truncate(text, discordContentLimit)})
+	case "teams":
+		return postJSON(ctx, webhookURL, teamsCard{
+			Type: "MessageCard", Context: "https://schema.org/extensions",
+			Summary: firstLine(text), Title: firstLine(text),
+			Sections: []teamsSection{{Text: text}},
+		})
+	case "json", "generic":
+		return postJSON(ctx, webhookURL, map[string]string{"schema": "ghe-wizard/v1", "message": text})
+	default:
+		return fmt.Errorf("notify: unknown format %q (use auto|slack|teams|discord|json)", format)
+	}
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
 // SendFormat dispatches by explicit format: auto (detect from the URL),
 // slack, teams, discord, or json (the stable generic document).
 func SendFormat(ctx context.Context, format, webhookURL string, sc *engine.Scorecard, drift *store.Drift) error {
