@@ -41,6 +41,23 @@ identity:
   # roster_csv: hr-roster.csv
   # mail_trace_csv: github-signup-trace.csv
 
+# FinOps: Copilot seat reclaim windows. Drives SEAT-01 (never activated),
+# SEAT-02 (dormant) and the `usage`/`seats` reports. A window of 0 disables
+# that reclaim class (the KPI is still reported, no rows are proposed).
+usage:
+  never_activated_days: 30      # assigned but never used past N days → reclaim
+  dormant_days: 60              # no activity in N days → reclaim
+  # Logins never proposed for reclaim (still counted in the seat KPIs).
+  keep_users:
+    - ceo
+    - staff-lead
+
+# Explicit assumptions for the agentic-SDLC ROI model. These are always shown
+# alongside the computed value — there is no hidden ROI number.
+roi:
+  hourly_rate_usd: 90
+  minutes_saved_per_acceptance: 2
+
 # Accepted risks. A waiver converts a failing/warning finding to "waived",
 # excluding it from the score and from --fail-on gating until it expires.
 waivers:

@@ -14,6 +14,7 @@ import (
 	"github.com/ghe-wizard/ghe-wizard/internal/config"
 	"github.com/ghe-wizard/ghe-wizard/internal/engine"
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
+	"github.com/ghe-wizard/ghe-wizard/internal/usage"
 )
 
 // newTestServer builds a demo-mode server (no token required) and serves the
@@ -230,5 +231,36 @@ func TestDemoApplyImprovesNextAssessment(t *testing.T) {
 	if after.Summary.Score <= before.Summary.Score {
 		t.Fatalf("score should improve after demo apply: before=%d after=%d",
 			before.Summary.Score, after.Summary.Score)
+	}
+}
+
+// TestUsageEndpoint drives /api/usage in demo mode with a FinOps policy,
+// proving the usage/roi policy blocks flow through the web path.
+func TestUsageEndpoint(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "policy.yaml")
+	body := "usage:\n  never_activated_days: 30\n  dormant_days: 60\nroi:\n  hourly_rate_usd: 100\n  minutes_saved_per_acceptance: 3\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ts := newTestServer(t, Options{PolicyPath: p})
+
+	resp := postJSON(t, ts.URL+"/api/usage", map[string]any{})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body: %s", resp.StatusCode, b)
+	}
+	var rep usage.Report
+	if err := json.NewDecoder(resp.Body).Decode(&rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.Seats.Licensed != 8 {
+		t.Errorf("Licensed = %d, want 8", rep.Seats.Licensed)
+	}
+	if len(rep.Reclaim) == 0 {
+		t.Error("reclaim list should not be empty in demo mode")
+	}
+	if rep.ROI.Assumptions.HourlyRateUSD != 100 || rep.ROI.Assumptions.MinutesSavedPerAcceptance != 3 {
+		t.Errorf("policy roi: block did not reach the report: %+v", rep.ROI.Assumptions)
 	}
 }

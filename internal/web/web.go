@@ -27,6 +27,7 @@ import (
 	"github.com/ghe-wizard/ghe-wizard/internal/rules"
 	_ "github.com/ghe-wizard/ghe-wizard/internal/rules/catalog" // register rules
 	"github.com/ghe-wizard/ghe-wizard/internal/store"
+	"github.com/ghe-wizard/ghe-wizard/internal/usage"
 )
 
 //go:embed ui
@@ -76,6 +77,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("/api/assess/stream", s.handleAssessStream)
 	mux.HandleFunc("/api/apply", s.handleApply)
 	mux.HandleFunc("/api/export/csv", s.handleExportCSV)
+	mux.HandleFunc("/api/usage", s.handleUsage)
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/badge.svg", s.handleBadge)
@@ -160,6 +162,7 @@ func (s *server) cfgFor(b reqBody) *config.Config {
 	// Config-as-code thresholds apply to every request-scoped config.
 	s.pol.ApplyThresholds(&c.Thresholds.MaxEnterpriseOwners, &c.Thresholds.StaleOrgDays)
 	s.pol.ApplyIdentity(&c.Identity)
+	s.pol.ApplyFinOps(&c.Usage, &c.ROI)
 	return &c
 }
 
@@ -398,6 +401,25 @@ func (s *server) handleApply(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.SaveRemediations(ctx, s.enterpriseFor(b), results)
 	}
 	writeJSON(w, http.StatusOK, results)
+}
+
+// handleUsage renders the Copilot usage/spend/ROI report (Phase C surface).
+func (s *server) handleUsage(w http.ResponseWriter, r *http.Request) {
+	var b reqBody
+	_ = json.NewDecoder(r.Body).Decode(&b)
+	eng, err := s.engineFor(b)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	rep, err := usage.Collect(ctx, eng.API(), s.cfgFor(b))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 // handleExportCSV renders a scorecard the client already holds as a CSV

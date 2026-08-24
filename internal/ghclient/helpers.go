@@ -40,6 +40,9 @@ type WriteAPI interface {
 	// call it.
 	RemoveOutsideCollaborator(ctx context.Context, org, login string) error
 	SetOrgNotificationRestriction(ctx context.Context, org string, enabled bool) error
+	// RevokeCopilotSeats is DESTRUCTIVE: it cancels Copilot seats for the
+	// given users. Only destructive-gated rules may call it.
+	RevokeCopilotSeats(ctx context.Context, org string, logins []string) (int, error)
 }
 
 // ErrReadOnly explains a remediation that could not run because the API has

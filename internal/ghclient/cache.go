@@ -35,6 +35,11 @@ type Cached struct {
 	teams     map[string]*cacheEntry[teamsResult]
 	extGroups map[string]*cacheEntry[countResult]
 	csDefault map[string]*cacheEntry[boolResult]
+
+	// FinOps reads (see UsageAPI).
+	seats   map[string]*cacheEntry[seatsResult]
+	metrics *cacheEntry[metricsResult]
+	billing *cacheEntry[billingResult]
 }
 
 type cacheEntry[T any] struct {
@@ -431,6 +436,89 @@ func (c *Cached) CodeSecurityDefaultConfigured(ctx context.Context, org string) 
 	e.once.Do(func() {
 		var r boolResult
 		r.v, r.capb, e.err = inner.CodeSecurityDefaultConfigured(ctx, org)
+		e.val = r
+	})
+	return e.val.v, e.val.capb, e.err
+}
+
+// --- UsageAPI: memoized FinOps reads ------------------------------------------
+
+const usageUnavailable = "usage data source unavailable with this client"
+
+type seatsResult struct {
+	v    []CopilotSeat
+	capb Capability
+}
+
+type metricsResult struct {
+	v    []MetricsDay
+	capb Capability
+}
+
+type billingResult struct {
+	v    []BillingUsageItem
+	capb Capability
+}
+
+// CopilotSeats memoizes per org (SEAT-01/02/03 and the usage command share it).
+func (c *Cached) CopilotSeats(ctx context.Context, org string) ([]CopilotSeat, Capability, error) {
+	inner, ok := Usage(c.inner)
+	if !ok {
+		return nil, Capability{Determined: false, Reason: usageUnavailable}, nil
+	}
+	c.mu.Lock()
+	if c.seats == nil {
+		c.seats = map[string]*cacheEntry[seatsResult]{}
+	}
+	e := c.seats[org]
+	if e == nil {
+		e = &cacheEntry[seatsResult]{}
+		c.seats[org] = e
+	}
+	c.mu.Unlock()
+	e.once.Do(func() {
+		var r seatsResult
+		r.v, r.capb, e.err = inner.CopilotSeats(ctx, org)
+		e.val = r
+	})
+	return e.val.v, e.val.capb, e.err
+}
+
+// CopilotMetricsDays memoizes per enterprise.
+func (c *Cached) CopilotMetricsDays(ctx context.Context, slug string) ([]MetricsDay, Capability, error) {
+	inner, ok := Usage(c.inner)
+	if !ok {
+		return nil, Capability{Determined: false, Reason: usageUnavailable}, nil
+	}
+	c.mu.Lock()
+	if c.metrics == nil {
+		c.metrics = &cacheEntry[metricsResult]{}
+	}
+	e := c.metrics
+	c.mu.Unlock()
+	e.once.Do(func() {
+		var r metricsResult
+		r.v, r.capb, e.err = inner.CopilotMetricsDays(ctx, slug)
+		e.val = r
+	})
+	return e.val.v, e.val.capb, e.err
+}
+
+// EnterpriseBillingUsage memoizes per enterprise.
+func (c *Cached) EnterpriseBillingUsage(ctx context.Context, slug string) ([]BillingUsageItem, Capability, error) {
+	inner, ok := Usage(c.inner)
+	if !ok {
+		return nil, Capability{Determined: false, Reason: usageUnavailable}, nil
+	}
+	c.mu.Lock()
+	if c.billing == nil {
+		c.billing = &cacheEntry[billingResult]{}
+	}
+	e := c.billing
+	c.mu.Unlock()
+	e.once.Do(func() {
+		var r billingResult
+		r.v, r.capb, e.err = inner.EnterpriseBillingUsage(ctx, slug)
 		e.val = r
 	})
 	return e.val.v, e.val.capb, e.err

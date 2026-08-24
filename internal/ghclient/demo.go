@@ -24,6 +24,7 @@ type DemoAPI struct {
 	notifOn      map[string]bool   // org -> overridden notification restriction
 	forkPriv     map[string]bool   // org -> overridden members-can-fork-private
 	csDefault    map[string]bool   // org -> code security default configured via remediation
+	revokedSeat  map[string]bool   // "org/login" -> Copilot seat revoked via remediation
 	workflowPerm string            // overridden enterprise default workflow permissions
 	wfHardened   bool              // workflow permissions hardened via remediation
 	allowedActs  string            // overridden enterprise allowed-actions policy
@@ -34,16 +35,17 @@ type DemoAPI struct {
 // NewDemoAPI returns a demo data source.
 func NewDemoAPI() *DemoAPI {
 	return &DemoAPI{
-		basePerm:   map[string]string{},
-		twoFA:      map[string]bool{},
-		secretScan: map[string]bool{},
-		dependabot: map[string]bool{},
-		publicRepo: map[string]bool{},
-		signoff:    map[string]bool{},
-		removedOC:  map[string]bool{},
-		notifOn:    map[string]bool{},
-		forkPriv:   map[string]bool{},
-		csDefault:  map[string]bool{},
+		basePerm:    map[string]string{},
+		twoFA:       map[string]bool{},
+		secretScan:  map[string]bool{},
+		dependabot:  map[string]bool{},
+		publicRepo:  map[string]bool{},
+		signoff:     map[string]bool{},
+		removedOC:   map[string]bool{},
+		notifOn:     map[string]bool{},
+		forkPriv:    map[string]bool{},
+		csDefault:   map[string]bool{},
+		revokedSeat: map[string]bool{},
 	}
 }
 
@@ -321,6 +323,86 @@ func (d *DemoAPI) CodeSecurityDefaultConfigured(ctx context.Context, org string)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.csDefault[org], Capability{Determined: true}, nil
+}
+
+// --- UsageAPI: synthetic FinOps data ------------------------------------------
+
+func (d *DemoAPI) CopilotSeats(ctx context.Context, org string) ([]CopilotSeat, Capability, error) {
+	now := time.Now()
+	seat := func(login, plan string, createdDays, lastActiveDays int) CopilotSeat {
+		s := CopilotSeat{Org: org, Login: login, PlanType: plan, CreatedAt: now.AddDate(0, 0, -createdDays)}
+		if lastActiveDays >= 0 {
+			s.LastActivityAt = now.AddDate(0, 0, -lastActiveDays)
+		}
+		return s
+	}
+	fixtures := map[string][]CopilotSeat{
+		"acme-payments": {
+			seat("alice", "enterprise", 200, 1),
+			seat("bob", "enterprise", 180, 2),
+			seat("never-activated-dev", "business", 90, -1), // never used -> SEAT-01
+			seat("dormant-dev", "business", 300, 75),        // idle -> SEAT-02
+		},
+		"acme-platform": {
+			seat("carol", "business", 150, 3),
+			seat("bob", "business", 120, 40), // duplicate seat across orgs -> SEAT-03
+			seat("dave", "business", 100, 5),
+		},
+		"acme-web": {
+			seat("erin", "business", 250, 95), // idle -> SEAT-02
+		},
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var out []CopilotSeat
+	for _, s := range fixtures[org] {
+		if !d.revokedSeat[org+"/"+s.Login] {
+			out = append(out, s)
+		}
+	}
+	return out, Capability{Determined: true}, nil
+}
+
+func (d *DemoAPI) CopilotMetricsDays(ctx context.Context, slug string) ([]MetricsDay, Capability, error) {
+	now := time.Now()
+	var days []MetricsDay
+	for i := 6; i >= 0; i-- {
+		date := now.AddDate(0, 0, -i).Format("2006-01-02")
+		days = append(days, MetricsDay{
+			Date: date,
+			Models: []ModelUsage{
+				{ID: "gpt-4.1", Suggestions: 180, Acceptances: 72, LinesAccepted: 460},
+				{ID: "claude-sonnet-4.5", Suggestions: 130, Acceptances: 61, LinesAccepted: 540},
+				{ID: "auto", Suggestions: 100, Acceptances: 42, LinesAccepted: 300},
+				{ID: "gemini-2.5-pro", Suggestions: 30, Acceptances: 10, LinesAccepted: 70},
+				{ID: "experimental-x1", Suggestions: 8, Acceptances: 2, LinesAccepted: 12},
+			},
+		})
+	}
+	return days, Capability{Determined: true}, nil
+}
+
+func (d *DemoAPI) EnterpriseBillingUsage(ctx context.Context, slug string) ([]BillingUsageItem, Capability, error) {
+	return []BillingUsageItem{
+		{Product: "copilot", NetAmountUSD: 234}, // seat spend, no model attribution
+		{Product: "copilot", Model: "claude-sonnet-4.5", NetAmountUSD: 208},
+		{Product: "copilot", Model: "gpt-5", NetAmountUSD: 81},
+		{Product: "copilot", Model: "gemini-2.5-pro", NetAmountUSD: 12},
+		{Product: "actions", NetAmountUSD: 328},
+	}, Capability{Determined: true}, nil
+}
+
+func (d *DemoAPI) RevokeCopilotSeats(ctx context.Context, org string, logins []string) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n := 0
+	for _, l := range logins {
+		if !d.revokedSeat[org+"/"+l] {
+			d.revokedSeat[org+"/"+l] = true
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (d *DemoAPI) RemoveOutsideCollaborator(ctx context.Context, org, login string) error {

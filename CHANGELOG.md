@@ -4,6 +4,45 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-08-23
+
+FinOps release: raw Copilot seat, metrics and billing data become a usage,
+spend and ROI view, and idle/dormant/duplicate seats become reclaimable through
+three destructive-gated rules. Catalog: 48 rules across 10 domains.
+
+### Added
+- **Usage, spend & ROI module (`internal/usage`):** a new FinOps view built
+  from three composable pieces — seat reclaim (`Reclaim`), per-model economics
+  joined to billing via a declarative model crosswalk (`Economics`), and an
+  explicit-assumptions ROI model (`ComputeROI`). The crosswalk classifies
+  Copilot model IDs by vendor/family/tier (first-match-wins, substring); an
+  unmapped model is always surfaced, never silently dropped.
+- **Seat-reclaim rules (SEAT-01/02/03, billing domain, remediable):** SEAT-01
+  flags seats assigned but never activated past a window, SEAT-02 dormant seats
+  (no activity in N days), SEAT-03 a login holding duplicate seats across
+  organizations. All three cancel licenses and are therefore **destructive** —
+  excluded from bulk apply, the wizard and the dashboard, and runnable only
+  with an explicit `--rules` list plus `--allow-destructive`. For duplicate
+  holders the most-recently-active seat is kept and the rest revoked.
+- **`usage` and `seats` CLI commands:** `usage` renders the full FinOps report
+  (Markdown, JSON or CSV); `seats` emits just the seat-reclaim worklist as CSV.
+  Both honor policy and run against `--demo` synthetic data.
+- **`/api/usage` dashboard endpoint** serving the same FinOps data as JSON.
+- **`finops` rule profile:** runs the billing domain only (cost centers,
+  spending limits, seat reclaim).
+- **Config-as-code FinOps policy:** a `usage` section (`never_activated_days`,
+  `dormant_days`, and a `keep_users` exemption list for named users) and a
+  `roi` section (`hourly_rate_usd`, `minutes_saved_per_acceptance`), applied
+  via `ApplyFinOps`. A window of `0` disables that reclaim class; kept users
+  are still counted in the KPIs but never proposed for reclaim.
+
+### Notes
+- The ROI model carries its assumptions alongside every result and uses a `-1`
+  sentinel for an unknown payback multiple (zero measured spend) rather than
+  dividing by zero — there is no hidden ROI number.
+- Reclaim windows and ROI rates are policy inputs, not hardcoded; the report
+  states the metric window and, for reclaim proposals, the reason per seat.
+
 ## [1.4.0] - 2026-08-11
 
 Governance depth release: the teams domain becomes scored, code security
@@ -219,6 +258,7 @@ performance pass.
   Cloud, as an interactive CLI and an embedded web dashboard. Read-only
   assessment with a 0–100 scorecard and idempotent, dry-runnable remediations.
 
+[1.5.0]: https://github.com/heisenberg-alt/ghe-wizard/releases/tag/v1.5.0
 [1.4.0]: https://github.com/heisenberg-alt/ghe-wizard/releases/tag/v1.4.0
 [1.3.0]: https://github.com/heisenberg-alt/ghe-wizard/releases/tag/v1.3.0
 [1.2.0]: https://github.com/heisenberg-alt/ghe-wizard/releases/tag/v1.2.0

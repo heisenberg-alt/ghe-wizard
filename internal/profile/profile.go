@@ -50,6 +50,11 @@ var registry = map[string]Profile{
 		Description: "Security, identity and policy rules for audit evidence.",
 		Domains:     []rules.Domain{rules.DomainSecurity, rules.DomainIdentity, rules.DomainPolicies},
 	},
+	"finops": {
+		Name:        "finops",
+		Description: "Copilot seat lifecycle and billing rules.",
+		Domains:     []rules.Domain{rules.DomainBilling},
+	},
 }
 
 // Get returns a copy of a built-in profile by name.

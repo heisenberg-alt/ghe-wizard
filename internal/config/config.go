@@ -44,6 +44,11 @@ type Config struct {
 	// the policy file's identity: section.
 	Identity IdentityConfig `json:"identity"`
 
+	// Usage governs the FinOps checks (SEAT-*) and the usage command.
+	Usage UsageConfig `json:"usage"`
+	// ROI holds the explicit assumptions for the agentic-SDLC ROI model.
+	ROI ROIConfig `json:"roi"`
+
 	// MaxOrgs caps how many organizations are scanned (0 = no cap).
 	MaxOrgs int `json:"max_orgs"`
 	// MaxReposPerOrg bounds the per-org repository scan (0 = default). Requested
@@ -94,6 +99,34 @@ func (ic *IdentityConfig) AllowsUser(login string) bool {
 	return false
 }
 
+// UsageConfig tunes the Copilot seat-lifecycle checks (SEAT-*).
+type UsageConfig struct {
+	// NeverActivatedDays: a seat assigned this long ago with zero activity is
+	// reclaimable (0 disables the check).
+	NeverActivatedDays int `json:"never_activated_days"`
+	// DormantDays: a seat idle this long is reclaimable (0 disables).
+	DormantDays int `json:"dormant_days"`
+	// KeepUsers are logins whose seats are never proposed for reclaim.
+	KeepUsers []string `json:"keep_users"`
+}
+
+// KeepsUser reports whether a login's seats are exempt from reclaim.
+func (uc *UsageConfig) KeepsUser(login string) bool {
+	for _, u := range uc.KeepUsers {
+		if strings.EqualFold(u, login) {
+			return true
+		}
+	}
+	return false
+}
+
+// ROIConfig holds the explicit assumptions behind the ROI model; they are
+// always displayed next to any computed result.
+type ROIConfig struct {
+	HourlyRateUSD             float64 `json:"hourly_rate_usd"`
+	MinutesSavedPerAcceptance float64 `json:"minutes_saved_per_acceptance"`
+}
+
 // DefaultThresholds returns GitHub-guidance-aligned defaults.
 func DefaultThresholds() Thresholds {
 	return Thresholds{
@@ -110,6 +143,8 @@ func Load(path string) (*Config, error) {
 		GraphQLURL: "https://api.github.com/graphql",
 		Thresholds: DefaultThresholds(),
 		Identity:   IdentityConfig{MaxOutsideCollaborators: -1},
+		Usage:      UsageConfig{NeverActivatedDays: 30, DormantDays: 60},
+		ROI:        ROIConfig{HourlyRateUSD: 90, MinutesSavedPerAcceptance: 2},
 	}
 
 	if path != "" {

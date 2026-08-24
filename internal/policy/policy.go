@@ -36,6 +36,17 @@ type Policy struct {
 		RosterCSV                     string   `yaml:"roster_csv"`
 		MailTraceCSV                  string   `yaml:"mail_trace_csv"`
 	} `yaml:"identity"`
+	// Usage tunes the Copilot seat-lifecycle checks (SEAT-*).
+	Usage struct {
+		NeverActivatedDays *int     `yaml:"never_activated_days"`
+		DormantDays        *int     `yaml:"dormant_days"`
+		KeepUsers          []string `yaml:"keep_users"`
+	} `yaml:"usage"`
+	// ROI sets the explicit assumptions for the agentic-SDLC ROI model.
+	ROI struct {
+		HourlyRateUSD             *float64 `yaml:"hourly_rate_usd"`
+		MinutesSavedPerAcceptance *float64 `yaml:"minutes_saved_per_acceptance"`
+	} `yaml:"roi"`
 	// Waivers accept specific findings as known/accepted risks.
 	Waivers []Waiver `yaml:"waivers"`
 
@@ -139,6 +150,30 @@ func (p *Policy) ApplyIdentity(ic *config.IdentityConfig) {
 	}
 	if p.Identity.MailTraceCSV != "" {
 		ic.MailTraceCSV = p.Identity.MailTraceCSV
+	}
+}
+
+// ApplyFinOps copies the policy's usage and ROI settings onto the runtime
+// config. Unset values keep the config defaults.
+func (p *Policy) ApplyFinOps(uc *config.UsageConfig, rc *config.ROIConfig) {
+	if uc != nil {
+		if p.Usage.NeverActivatedDays != nil {
+			uc.NeverActivatedDays = *p.Usage.NeverActivatedDays
+		}
+		if p.Usage.DormantDays != nil {
+			uc.DormantDays = *p.Usage.DormantDays
+		}
+		if len(p.Usage.KeepUsers) > 0 {
+			uc.KeepUsers = append([]string(nil), p.Usage.KeepUsers...)
+		}
+	}
+	if rc != nil {
+		if p.ROI.HourlyRateUSD != nil {
+			rc.HourlyRateUSD = *p.ROI.HourlyRateUSD
+		}
+		if p.ROI.MinutesSavedPerAcceptance != nil {
+			rc.MinutesSavedPerAcceptance = *p.ROI.MinutesSavedPerAcceptance
+		}
 	}
 }
 

@@ -27,7 +27,7 @@ documentation.
 > enterprise so you can explore the scorecard and remediation flow instantly.
 
 
-## What it checks (45 rules, 10 domains)
+## What it checks (48 rules, 10 domains)
 
 | Domain | Examples |
 |---|---|
@@ -40,7 +40,7 @@ documentation.
 | Identity | verified/approved domains, corporate email on personal accounts, outside collaborators, SSO linkage, offboarding & signup-trace cross-checks |
 | Innersource | internal-visibility repos for discovery & reuse |
 | Automation | GitHub Apps over PATs, automated provisioning |
-| Billing | cost centers, spending limits |
+| Billing | cost centers, spending limits, Copilot seat reclaim (idle/dormant/duplicate) |
 
 Run `ghe-wizard list` for the full catalog. Rules marked `[remediable]` can be
 applied automatically.
@@ -222,6 +222,55 @@ in bulk or from the dashboard:
 ghe-wizard apply --rules IDENT-04 --allow-destructive --dry-run   # review first
 ```
 
+### Usage, spend & ROI (FinOps)
+
+Turn raw Copilot seat, metrics and billing data into a FinOps view: which seats
+to reclaim, where the model spend goes, and the ROI of agentic development under
+**explicit, disclosed assumptions** (no black-box number). The `usage` report
+covers seats, spend, per-model economics and ROI; `seats` emits just the
+reclaim worklist as CSV:
+
+```bash
+# Full FinOps report (Markdown, JSON or CSV)
+ghe-wizard usage
+ghe-wizard usage --format json --out finops.json
+
+# Seat-reclaim worklist only (CSV by default)
+ghe-wizard seats > reclaim.csv
+
+# Try it with synthetic data
+ghe-wizard usage --demo
+```
+
+Tune the reclaim windows and ROI assumptions in policy (a `keep_users` list
+exempts named users — e.g. leadership — from reclaim proposals while still
+counting them in the KPIs):
+
+```yaml
+# policy.yaml
+usage:
+  never_activated_days: 30       # assigned but never used → reclaim (0 disables)
+  dormant_days: 60               # no activity in N days → reclaim (0 disables)
+  keep_users: [ceo, staff-lead]  # never propose these logins for reclaim
+roi:
+  hourly_rate_usd: 90
+  minutes_saved_per_acceptance: 2
+```
+
+The three seat rules (SEAT-01 never-activated, SEAT-02 dormant, SEAT-03
+duplicate-across-orgs) cancel licenses, so they are **destructive**: excluded
+from bulk apply, the wizard and the dashboard, and runnable only with an
+explicit rule list plus `--allow-destructive`. For duplicate holders the
+most-recently-active seat is kept and the others revoked.
+
+```bash
+ghe-wizard apply --rules SEAT-01,SEAT-02,SEAT-03 --allow-destructive --dry-run
+```
+
+The dashboard exposes the same data at `/api/usage`, and `assess --profile
+finops` runs just the billing domain (cost centers, spending limits, seat
+reclaim).
+
 ### Config-as-code & waivers
 
 Govern the assessment declaratively with a YAML policy — disable rules, override
@@ -245,6 +294,7 @@ Run a curated subset of checks with a **profile**, or export auditor-friendly
 ghe-wizard assess --profile high-security      # only critical/high rules
 ghe-wizard assess --profile onboarding         # day-one onboarding checks
 ghe-wizard assess --profile compliance         # security + policies domains
+ghe-wizard assess --profile finops             # billing: cost, limits, seat reclaim
 ghe-wizard assess --format csv --out evidence.csv
 ```
 

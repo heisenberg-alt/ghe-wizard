@@ -39,7 +39,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		usage()
+		printUsage()
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -63,17 +63,21 @@ func main() {
 		err = cmdHistory(args)
 	case "identity":
 		err = cmdIdentity(args)
+	case "usage":
+		err = cmdUsage(args)
+	case "seats":
+		err = cmdSeats(args)
 	case "explain", "ai-plan", "ask":
 		err = cmdAI(cmd, args)
 	case "version", "--version", "-v":
 		fmt.Println(buildinfo.Get().String())
 		return
 	case "-h", "--help", "help":
-		usage()
+		printUsage()
 		return
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
-		usage()
+		printUsage()
 		os.Exit(2)
 	}
 	if err != nil {
@@ -82,7 +86,7 @@ func main() {
 	}
 }
 
-func usage() {
+func printUsage() {
 	fmt.Fprint(os.Stderr, `ghe-wizard — GitHub Enterprise best-practices assessment & setup wizard
 
 Commands:
@@ -94,6 +98,8 @@ Commands:
   list      List the best-practice rule catalog
   history   Show recorded assessment history (requires --db)
   identity  Identity governance: 'warn' campaign & 'transport-rule' generator
+  usage     Copilot usage, spend & ROI report (seats, models, reclaim list)
+  seats     Seat-reclaim shortcut (usage report, reclaim CSV by default)
   explain   AI: explain a finding (explain <RULE-ID>; needs GHE_AI_* env)
   ai-plan   AI: prioritized remediation plan (needs GHE_AI_* env)
   ask       AI: ask a question about the scorecard (needs GHE_AI_* env)

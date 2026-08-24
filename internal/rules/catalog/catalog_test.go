@@ -168,6 +168,10 @@ func (f *fakeAPI) SetOrgNotificationRestriction(ctx context.Context, org string,
 	f.record("SetOrgNotificationRestriction %s %v", org, enabled)
 	return nil
 }
+func (f *fakeAPI) RevokeCopilotSeats(ctx context.Context, org string, logins []string) (int, error) {
+	f.record("RevokeCopilotSeats %s %s", org, strings.Join(logins, "+"))
+	return len(logins), nil
+}
 
 // readOnlyAPI exposes only the read surface of a fakeAPI: embedding the GHAPI
 // interface promotes just its methods, so no WriteAPI and no Unwrap exist.

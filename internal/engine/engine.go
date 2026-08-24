@@ -51,6 +51,10 @@ func New(api ghclient.GHAPI, cfg *config.Config) *Engine {
 	return &Engine{api: api, cfg: cfg}
 }
 
+// API exposes the engine's (cached) API surface for non-rule consumers such
+// as the usage report.
+func (e *Engine) API() ghclient.GHAPI { return e.api }
+
 // Assess runs the given rules (or all if none supplied) and returns a scorecard.
 func (e *Engine) Assess(ctx context.Context, rs []rules.Rule) *Scorecard {
 	if len(rs) == 0 {
